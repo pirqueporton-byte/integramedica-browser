@@ -9,9 +9,21 @@ function json(data, status = 200) {
     headers: {
       "content-type": "application/json; charset=UTF-8",
       "access-control-allow-origin": "*",
+      "access-control-allow-methods": "GET,POST,OPTIONS",
+      "access-control-allow-headers": "content-type",
       "cache-control": "no-store",
     },
   });
+}
+
+async function liveView(page) {
+  const cdp = await page.createCDPSession();
+
+  const v = await cdp.send("Cloudflare.getLiveView", {
+    expiresInMs: 300000,
+  });
+
+  return v.devtoolsFrontendUrl;
 }
 
 export default {
@@ -32,62 +44,56 @@ export default {
       return json({
         ok: true,
         servicio: "IntegraMedica Browser",
-        rutas: ["/browser-test", "/sessions"],
+        rutas: [
+          "/browser-test",
+          "/captcha-info",
+          "/sessions"
+        ],
       });
     }
 
-    // PRUEBA 1:
-    // abre una sesión real de Browser Run, navega a la agenda,
-    // crea un Live View temporal y deja la sesión viva.
+    // ---------------------------------------------------------
+    // PRUEBA DE BROWSER RUN
+    // ---------------------------------------------------------
     if (url.pathname === "/browser-test") {
       let browser;
 
       try {
         browser = await puppeteer.launch(env.BROWSER, {
-          keep_alive: 600000, // 10 minutos de inactividad
+          keep_alive: 600000,
         });
 
         const sessionId = browser.sessionId();
-        const page = await browser.newPage();
 
-        await page.setUserAgent(
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
-          "AppleWebKit/537.36 (KHTML, like Gecko) " +
-          "Chrome/153.0.0.0 Safari/537.36"
-        );
+        const page = await browser.newPage();
 
         await page.goto(AGENDA_URL, {
           waitUntil: "domcontentloaded",
           timeout: 45000,
         });
 
-        const title = await page.title();
-        const currentUrl = page.url();
+        const liveViewUrl = await liveView(page);
 
-        // Live View: permite que el usuario vea e interactúe
-        // con ESTA MISMA sesión si hace falta intervención humana.
-        const cdp = await page.createCDPSession();
-        const liveView = await cdp.send("Cloudflare.getLiveView", {
-          expiresInMs: 300000, // enlace válido por 5 minutos
-        });
-
-        // IMPORTANTE: no cerramos el navegador.
-        // Disconnect libera la conexión del Worker pero conserva la sesión.
-        browser.disconnect();
-
-        return json({
+        const result = {
           ok: true,
           estado: "browser_abierto",
           sessionId,
-          title,
-          currentUrl,
-          liveViewUrl: liveView.devtoolsFrontendUrl,
-          mensaje:
-            "Sesión abierta. Usa liveViewUrl para entrar a la sesión interactiva.",
-        });
+          title: await page.title(),
+          currentUrl: page.url(),
+          liveViewUrl,
+        };
+
+        // Dejamos la sesión viva
+        browser.disconnect();
+
+        return json(result);
+
       } catch (error) {
+
         try {
-          if (browser) browser.disconnect();
+          if (browser) {
+            browser.disconnect();
+          }
         } catch (_) {}
 
         return json(
@@ -101,20 +107,158 @@ export default {
       }
     }
 
-    // Permite verificar qué sesiones Browser Run siguen abiertas.
-    if (url.pathname === "/sessions") {
+    // ---------------------------------------------------------
+    // DETECTAR RECAPTCHA / CAPTCHA
+    // ---------------------------------------------------------
+    if (url.pathname === "/captcha-info") {
+      let browser;
+
       try {
-        const sessions = await puppeteer.sessions(env.BROWSER);
+
+        browser = await puppeteer.launch(env.BROWSER, {
+          keep_alive: 600000,
+        });
+
+        const sessionId = browser.sessionId();
+
+        const page = await browser.newPage();
+
+        await page.goto(AGENDA_URL, {
+          waitUntil: "networkidle2",
+          timeout: 60000,
+        });
+
+        // Esperamos unos segundos para que carguen scripts diferidos
+        await new Promise((resolve) =>
+          setTimeout(resolve, 3500)
+        );
+
+        const captcha = await page.evaluate(() => {
+
+          // Detectar scripts de reCAPTCHA
+          const scripts = Array
+            .from(document.scripts)
+            .map((s) => s.src)
+            .filter(Boolean)
+            .filter((src) =>
+              /recaptcha|captcha|google\.com\/recaptcha|gstatic\.com\/recaptcha/i.test(src)
+            );
+
+          // Buscar elementos con sitekey
+          const siteKeyElements = Array
+            .from(
+              document.querySelectorAll("[data-sitekey]")
+            )
+            .map((el) => ({
+              tag: el.tagName,
+              id: el.id || "",
+              sitekey:
+                el.getAttribute("data-sitekey") || "",
+            }));
+
+          // Buscar textarea que pueda contener token
+          const textareas = Array
+            .from(
+              document.querySelectorAll("textarea")
+            )
+            .filter((el) =>
+              /recaptcha|captcha/i.test(
+                `${el.name || ""} ${el.id || ""}`
+              )
+            )
+            .map((el) => ({
+              id: el.id || "",
+              name: el.name || "",
+              hasValue: Boolean(el.value),
+              valueLength:
+                el.value
+                  ? el.value.length
+                  : 0,
+            }));
+
+          return {
+            href: location.href,
+            title: document.title,
+
+            grecaptchaPresent:
+              typeof window.grecaptcha !== "undefined",
+
+            enterprisePresent:
+              typeof window.grecaptcha !== "undefined" &&
+              typeof window.grecaptcha.enterprise !==
+                "undefined",
+
+            scriptSrcs: scripts,
+
+            siteKeyElements,
+
+            captchaTextareas: textareas,
+          };
+        });
+
+        const liveViewUrl =
+          await liveView(page);
+
+        // Dejamos la sesión activa
+        browser.disconnect();
+
+        return json({
+          ok: true,
+
+          sessionId,
+
+          captcha,
+
+          liveViewUrl,
+        });
+
+      } catch (error) {
+
+        try {
+          if (browser) {
+            browser.disconnect();
+          }
+        } catch (_) {}
+
+        return json(
+          {
+            ok: false,
+            paso: "captcha-info",
+            error: String(
+              error?.stack || error
+            ),
+          },
+          500
+        );
+      }
+    }
+
+    // ---------------------------------------------------------
+    // LISTAR SESIONES ACTIVAS
+    // ---------------------------------------------------------
+    if (url.pathname === "/sessions") {
+
+      try {
+
+        const sessions =
+          await puppeteer.sessions(
+            env.BROWSER
+          );
+
         return json({
           ok: true,
           sesiones: sessions,
         });
+
       } catch (error) {
+
         return json(
           {
             ok: false,
             paso: "sessions",
-            error: String(error?.stack || error),
+            error: String(
+              error?.stack || error
+            ),
           },
           500
         );
@@ -125,7 +269,11 @@ export default {
       {
         ok: false,
         error: "Ruta no encontrada",
-        rutas: ["/browser-test", "/sessions"],
+        rutas: [
+          "/browser-test",
+          "/captcha-info",
+          "/sessions"
+        ],
       },
       404
     );
