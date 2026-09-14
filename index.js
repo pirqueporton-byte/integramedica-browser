@@ -1,7 +1,7 @@
 import puppeteer from "@cloudflare/puppeteer";
 
-const AGENDA_URL =
-  "https://agenda.bupa.cl/integramedica/consulta-medica/reserva-consulta-medica";
+const AGENDA_CONFIRM_URL =
+  "https://agenda.bupa.cl/integramedica/consulta-medica/reserva-confirmar-hora";
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data, null, 2), {
@@ -16,14 +16,18 @@ function json(data, status = 200) {
   });
 }
 
-async function liveView(page) {
+async function crearLiveView(page) {
   const cdp = await page.createCDPSession();
 
-  const v = await cdp.send("Cloudflare.getLiveView", {
-    expiresInMs: 300000,
-  });
+  const { devtoolsFrontendUrl } = await cdp.send(
+    "Cloudflare.getLiveView",
+    {
+      mode: "tab",
+      expiresInMs: 300000,
+    }
+  );
 
-  return v.devtoolsFrontendUrl;
+  return devtoolsFrontendUrl;
 }
 
 export default {
@@ -40,66 +44,37 @@ export default {
       });
     }
 
+    // =====================================================
+    // INICIO
+    // =====================================================
     if (url.pathname === "/") {
       return json({
         ok: true,
         servicio: "IntegraMedica Browser",
         rutas: [
-          "/browser-test",
-          "/captcha-info",
-          "/sessions"
+          "/sessions",
+          "/finalizar-reserva"
         ],
       });
     }
 
-    // ---------------------------------------------------------
-    // PRUEBA DE BROWSER RUN
-    // ---------------------------------------------------------
-    if (url.pathname === "/browser-test") {
-      let browser;
-
+    // =====================================================
+    // CONSULTAR SESIONES - NO CREA BROWSER
+    // =====================================================
+    if (url.pathname === "/sessions") {
       try {
-        browser = await puppeteer.launch(env.BROWSER, {
-          keep_alive: 600000,
-        });
+        const sesiones =
+          await puppeteer.sessions(env.BROWSER);
 
-        const sessionId = browser.sessionId();
-
-        const page = await browser.newPage();
-
-        await page.goto(AGENDA_URL, {
-          waitUntil: "domcontentloaded",
-          timeout: 45000,
-        });
-
-        const liveViewUrl = await liveView(page);
-
-        const result = {
+        return json({
           ok: true,
-          estado: "browser_abierto",
-          sessionId,
-          title: await page.title(),
-          currentUrl: page.url(),
-          liveViewUrl,
-        };
-
-        // Dejamos la sesión viva
-        browser.disconnect();
-
-        return json(result);
-
+          sesiones,
+        });
       } catch (error) {
-
-        try {
-          if (browser) {
-            browser.disconnect();
-          }
-        } catch (_) {}
-
         return json(
           {
             ok: false,
-            paso: "browser-test",
+            paso: "sessions",
             error: String(error?.stack || error),
           },
           500
@@ -107,161 +82,212 @@ export default {
       }
     }
 
-    // ---------------------------------------------------------
-    // DETECTAR RECAPTCHA / CAPTCHA
-    // ---------------------------------------------------------
-    if (url.pathname === "/captcha-info") {
-      let browser;
+    // =====================================================
+    // FINALIZAR RESERVA
+    // =====================================================
+    if (
+      url.pathname === "/finalizar-reserva" &&
+      request.method === "POST"
+    ) {
+      let browser = null;
+      let mantenerSesion = false;
 
       try {
+        const entrada = await request.json();
 
-        browser = await puppeteer.launch(env.BROWSER, {
-          keep_alive: 600000,
-        });
+        // -------------------------------------------------
+        // 1) Confirmación explícita
+        // -------------------------------------------------
+        if (entrada.confirmar !== true) {
+          return json(
+            {
+              ok: false,
+              estado: "requiere_confirmacion",
+              mensaje:
+                "La reserva requiere confirmación explícita.",
+            },
+            400
+          );
+        }
 
-        const sessionId = browser.sessionId();
+        if (!entrada.bupaCitaRequest) {
+          return json(
+            {
+              ok: false,
+              estado: "datos_incompletos",
+              mensaje: "Falta bupaCitaRequest.",
+            },
+            400
+          );
+        }
 
-        const page = await browser.newPage();
+        // -------------------------------------------------
+        // 2) Verificar límites ANTES de abrir browser
+        // -------------------------------------------------
+        const limites =
+          await puppeteer.limits(env.BROWSER);
 
-        await page.goto(AGENDA_URL, {
-          waitUntil: "networkidle2",
-          timeout: 60000,
-        });
+        if (
+          typeof limites.allowedBrowserAcquisitions ===
+            "number" &&
+          limites.allowedBrowserAcquisitions < 1
+        ) {
+          return json(
+            {
+              ok: false,
+              estado: "browser_no_disponible",
+              mensaje:
+                "Cloudflare no permite abrir una nueva sesión en este momento.",
+              timeUntilNextAllowedBrowserAcquisition:
+                limites.timeUntilNextAllowedBrowserAcquisition,
+            },
+            429
+          );
+        }
 
-        // Esperamos unos segundos para que carguen scripts diferidos
-        await new Promise((resolve) =>
-          setTimeout(resolve, 3500)
+        // -------------------------------------------------
+        // 3) Abrir UNA sesión corta
+        // -------------------------------------------------
+        browser = await puppeteer.launch(
+          env.BROWSER,
+          {
+            keep_alive: 30000,
+          }
         );
 
-        const captcha = await page.evaluate(() => {
+        const sessionId =
+          browser.sessionId();
 
-          // Detectar scripts de reCAPTCHA
-          const scripts = Array
-            .from(document.scripts)
-            .map((s) => s.src)
-            .filter(Boolean)
-            .filter((src) =>
-              /recaptcha|captcha|google\.com\/recaptcha|gstatic\.com\/recaptcha/i.test(src)
+        const page =
+          await browser.newPage();
+
+        page.setDefaultTimeout(12000);
+        page.setDefaultNavigationTimeout(20000);
+
+        // -------------------------------------------------
+        // 4) Abrir pantalla final Bupa
+        // -------------------------------------------------
+        await page.goto(
+          AGENDA_CONFIRM_URL,
+          {
+            waitUntil: "domcontentloaded",
+            timeout: 20000,
+          }
+        );
+
+        await new Promise(resolve =>
+          setTimeout(resolve, 2500)
+        );
+
+        // -------------------------------------------------
+        // 5) Inspección mínima
+        // NO intenta fabricar captcha
+        // -------------------------------------------------
+        const estado = await page.evaluate(() => {
+          const texto =
+            document.body?.innerText || "";
+
+          const scripts =
+            Array.from(document.scripts)
+              .map(s => s.src)
+              .filter(Boolean);
+
+          const tieneRecaptchaScript =
+            scripts.some(src =>
+              /recaptcha|google\.com\/recaptcha|gstatic\.com\/recaptcha/i.test(
+                src
+              )
             );
 
-          // Buscar elementos con sitekey
-          const siteKeyElements = Array
-            .from(
-              document.querySelectorAll("[data-sitekey]")
-            )
-            .map((el) => ({
-              tag: el.tagName,
-              id: el.id || "",
-              sitekey:
-                el.getAttribute("data-sitekey") || "",
-            }));
+          const grecaptcha =
+            typeof window.grecaptcha !== "undefined";
 
-          // Buscar textarea que pueda contener token
-          const textareas = Array
-            .from(
-              document.querySelectorAll("textarea")
-            )
-            .filter((el) =>
-              /recaptcha|captcha/i.test(
-                `${el.name || ""} ${el.id || ""}`
+          const enterprise =
+            typeof window.grecaptcha !== "undefined" &&
+            typeof window.grecaptcha.enterprise !==
+              "undefined";
+
+          const posiblesBotones =
+            Array.from(
+              document.querySelectorAll(
+                "button, input[type='submit']"
               )
             )
-            .map((el) => ({
-              id: el.id || "",
-              name: el.name || "",
-              hasValue: Boolean(el.value),
-              valueLength:
-                el.value
-                  ? el.value.length
-                  : 0,
-            }));
+              .map(el => ({
+                texto:
+                  (
+                    el.innerText ||
+                    el.value ||
+                    ""
+                  ).trim(),
+                disabled:
+                  Boolean(el.disabled),
+              }))
+              .filter(x => x.texto);
 
           return {
             href: location.href,
             title: document.title,
-
-            grecaptchaPresent:
-              typeof window.grecaptcha !== "undefined",
-
-            enterprisePresent:
-              typeof window.grecaptcha !== "undefined" &&
-              typeof window.grecaptcha.enterprise !==
-                "undefined",
-
-            scriptSrcs: scripts,
-
-            siteKeyElements,
-
-            captchaTextareas: textareas,
+            tieneRecaptchaScript,
+            grecaptcha,
+            enterprise,
+            textoVisible:
+              texto.substring(0, 1500),
+            botones:
+              posiblesBotones.slice(0, 20),
           };
         });
 
+        // -------------------------------------------------
+        // 6) Generar Live View SOLO para esta prueba
+        // -------------------------------------------------
         const liveViewUrl =
-          await liveView(page);
+          await crearLiveView(page);
 
-        // Dejamos la sesión activa
+        // -------------------------------------------------
+        // IMPORTANTE
+        // Todavía NO mandamos reservahora.
+        //
+        // Esta ejecución sirve para verificar si entrar
+        // directamente a reserva-confirmar-hora conserva
+        // o no el contexto necesario de Bupa.
+        //
+        // Dejamos la sesión disponible SOLO si realmente
+        // necesitamos verla manualmente.
+        // -------------------------------------------------
+        mantenerSesion = true;
+
         browser.disconnect();
+        browser = null;
 
         return json({
           ok: true,
-
+          estado: "inspeccion_final_lista",
           sessionId,
-
-          captcha,
-
+          pagina: estado,
           liveViewUrl,
+          mensaje:
+            "No se ha enviado ninguna reserva todavía. Revisar la pantalla final y continuar sobre esta misma sesión.",
         });
-
       } catch (error) {
-
-        try {
-          if (browser) {
-            browser.disconnect();
-          }
-        } catch (_) {}
-
         return json(
           {
             ok: false,
-            paso: "captcha-info",
-            error: String(
-              error?.stack || error
-            ),
+            estado: "error_finalizar_reserva",
+            error: String(error?.stack || error),
           },
           500
         );
-      }
-    }
-
-    // ---------------------------------------------------------
-    // LISTAR SESIONES ACTIVAS
-    // ---------------------------------------------------------
-    if (url.pathname === "/sessions") {
-
-      try {
-
-        const sessions =
-          await puppeteer.sessions(
-            env.BROWSER
-          );
-
-        return json({
-          ok: true,
-          sesiones: sessions,
-        });
-
-      } catch (error) {
-
-        return json(
-          {
-            ok: false,
-            paso: "sessions",
-            error: String(
-              error?.stack || error
-            ),
-          },
-          500
-        );
+      } finally {
+        // Si hubo error, cerrar SIEMPRE el browser.
+        if (
+          browser &&
+          !mantenerSesion
+        ) {
+          try {
+            await browser.close();
+          } catch (_) {}
+        }
       }
     }
 
@@ -269,11 +295,6 @@ export default {
       {
         ok: false,
         error: "Ruta no encontrada",
-        rutas: [
-          "/browser-test",
-          "/captcha-info",
-          "/sessions"
-        ],
       },
       404
     );
