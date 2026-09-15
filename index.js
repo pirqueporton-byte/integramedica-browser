@@ -8,6 +8,12 @@ const AGENDA_URL =
 const RESERVA_ENDPOINT =
   "/agenda/ms-sap/reserva/reservahora";
 
+const KEEP_ALIVE_MS = 60000;
+
+// ========================================================
+// RESPUESTAS / UTILIDADES
+// ========================================================
+
 function json(data, status = 200) {
   return new Response(JSON.stringify(data, null, 2), {
     status,
@@ -19,15 +25,6 @@ function json(data, status = 200) {
       "cache-control": "no-store"
     }
   });
-}
-
-function normalizar(texto = "") {
-  return texto
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .replace(/\s+/g, " ")
-    .trim();
 }
 
 async function pausa(ms) {
@@ -64,7 +61,7 @@ async function obtenerPagina(browser) {
 }
 
 // ========================================================
-// BUSCAR Y HACER CLICK POR TEXTO VISIBLE
+// CLICK POR TEXTO VISIBLE
 // ========================================================
 
 async function clickTexto(
@@ -82,8 +79,9 @@ async function clickTexto(
   const resultado =
     await page.evaluate(
       ({ textos, exacto }) => {
+
         function norm(t = "") {
-          return t
+          return String(t)
             .normalize("NFD")
             .replace(/[\u0300-\u036f]/g, "")
             .toLowerCase()
@@ -91,8 +89,64 @@ async function clickTexto(
             .trim();
         }
 
+        function visible(el) {
+          if (!el) return false;
+
+          const r =
+            el.getBoundingClientRect();
+
+          const style =
+            getComputedStyle(el);
+
+          return (
+            r.width > 0 &&
+            r.height > 0 &&
+            style.display !== "none" &&
+            style.visibility !== "hidden" &&
+            style.opacity !== "0"
+          );
+        }
+
+        function textoElemento(el) {
+          return norm(
+            el.innerText ||
+            el.textContent ||
+            el.getAttribute("aria-label") ||
+            el.getAttribute("title") ||
+            el.value ||
+            ""
+          );
+        }
+
+        function clickableDe(el) {
+          return (
+            el.closest(
+              [
+                "button",
+                "a",
+                "[role='button']",
+                "[role='option']",
+                "[role='combobox']",
+                "[aria-haspopup='listbox']",
+                "li",
+                "mat-option",
+                ".mat-option",
+                ".mat-mdc-option",
+                ".ng-option",
+                "mat-select",
+                ".mat-select-trigger",
+                ".mat-mdc-select-trigger",
+                ".ng-select-container",
+                "[tabindex]"
+              ].join(",")
+            ) || el
+          );
+        }
+
         const buscados =
-          textos.map(norm);
+          textos
+            .map(norm)
+            .filter(Boolean);
 
         const candidatos =
           Array.from(
@@ -102,65 +156,98 @@ async function clickTexto(
                 "a",
                 "[role='button']",
                 "[role='option']",
+                "[role='combobox']",
+                "[aria-haspopup='listbox']",
                 "label",
                 "li",
                 "mat-option",
                 ".mat-option",
-                ".mat-mdc-option"
+                ".mat-mdc-option",
+                ".ng-option",
+                "mat-select",
+                ".mat-select-trigger",
+                ".mat-mdc-select-trigger",
+                ".ng-select-container",
+                "[tabindex]",
+                "span",
+                "div",
+                "p"
               ].join(",")
             )
-          );
-
-        const visibles =
-          candidatos.filter(el => {
-            const r =
-              el.getBoundingClientRect();
-
-            const style =
-              getComputedStyle(el);
-
-            return (
-              r.width > 0 &&
-              r.height > 0 &&
-              style.display !== "none" &&
-              style.visibility !== "hidden"
-            );
-          });
-
-        let elegido = null;
+          )
+          .filter(visible);
 
         for (const buscado of buscados) {
-          elegido =
-            visibles.find(el => {
-              const texto =
-                norm(
-                  el.innerText ||
-                  el.textContent ||
-                  el.getAttribute("aria-label") ||
-                  el.value ||
-                  ""
+          const coincidencias =
+            candidatos
+              .filter(el => {
+                const t =
+                  textoElemento(el);
+
+                if (!t) {
+                  return false;
+                }
+
+                return exacto
+                  ? t === buscado
+                  : (
+                      t === buscado ||
+                      t.includes(buscado)
+                    );
+              })
+              .sort((a, b) => {
+                const ta =
+                  textoElemento(a);
+
+                const tb =
+                  textoElemento(b);
+
+                const exactA =
+                  ta === buscado ? 0 : 1;
+
+                const exactB =
+                  tb === buscado ? 0 : 1;
+
+                if (exactA !== exactB) {
+                  return exactA - exactB;
+                }
+
+                if (ta.length !== tb.length) {
+                  return ta.length - tb.length;
+                }
+
+                const ra =
+                  a.getBoundingClientRect();
+
+                const rb =
+                  b.getBoundingClientRect();
+
+                return (
+                  ra.width * ra.height -
+                  rb.width * rb.height
                 );
+              });
 
-              return exacto
-                ? texto === buscado
-                : texto.includes(buscado);
-            });
+          if (!coincidencias.length) {
+            continue;
+          }
 
-          if (elegido) break;
+          const clickable =
+            clickableDe(
+              coincidencias[0]
+            );
+
+          clickable.scrollIntoView({
+            block: "center",
+            inline: "center"
+          });
+
+          clickable.click();
+
+          return true;
         }
 
-        if (!elegido) {
-          return false;
-        }
-
-        elegido.scrollIntoView({
-          block: "center",
-          inline: "center"
-        });
-
-        elegido.click();
-
-        return true;
+        return false;
       },
       {
         textos,
@@ -192,8 +279,9 @@ async function llenarCampo(
 
   const selector =
     await page.evaluate(nombres => {
+
       function norm(t = "") {
-        return t
+        return String(t)
           .normalize("NFD")
           .replace(/[\u0300-\u036f]/g, "")
           .toLowerCase()
@@ -211,7 +299,11 @@ async function llenarCampo(
           )
         );
 
-      for (let i = 0; i < inputs.length; i++) {
+      for (
+        let i = 0;
+        i < inputs.length;
+        i++
+      ) {
         const input =
           inputs[i];
 
@@ -256,9 +348,10 @@ async function llenarCampo(
               `auto-field-${i}-${Date.now()}`;
           }
 
-          return `#${CSS.escape(
-            input.id
-          )}`;
+          return (
+            "#" +
+            CSS.escape(input.id)
+          );
         }
       }
 
@@ -281,6 +374,10 @@ async function llenarCampo(
   });
 
   await page.keyboard.press(
+    "Control+A"
+  );
+
+  await page.keyboard.press(
     "Backspace"
   );
 
@@ -291,13 +388,31 @@ async function llenarCampo(
     }
   );
 
-  await pausa(400);
+  await page.evaluate(el => {
+    el.dispatchEvent(
+      new Event(
+        "input",
+        { bubbles: true }
+      )
+    );
+
+    el.dispatchEvent(
+      new Event(
+        "change",
+        { bubbles: true }
+      )
+    );
+
+    el.blur();
+  }, input);
+
+  await pausa(500);
 
   return true;
 }
 
 // ========================================================
-// SELECCIONAR OPCIÓN DE UN DROPDOWN
+// SELECCIONAR OPCIÓN DE DROPDOWN / COMBOBOX
 // ========================================================
 
 async function seleccionarOpcion(
@@ -305,12 +420,12 @@ async function seleccionarOpcion(
   campo,
   valor
 ) {
-  // Primero intentamos un <select> nativo.
-  const nativo =
+  const selector =
     await page.evaluate(
-      ({ campo, valor }) => {
+      ({ campo }) => {
+
         function norm(t = "") {
-          return t
+          return String(t)
             .normalize("NFD")
             .replace(/[\u0300-\u036f]/g, "")
             .toLowerCase()
@@ -318,87 +433,447 @@ async function seleccionarOpcion(
             .trim();
         }
 
+        function visible(el) {
+          if (!el) return false;
+
+          const r =
+            el.getBoundingClientRect();
+
+          const style =
+            getComputedStyle(el);
+
+          return (
+            r.width > 0 &&
+            r.height > 0 &&
+            style.display !== "none" &&
+            style.visibility !== "hidden"
+          );
+        }
+
         const campoN =
           norm(campo);
 
-        const valorN =
-          norm(valor);
-
-        const selects =
+        const controles =
           Array.from(
             document.querySelectorAll(
-              "select"
+              [
+                "select",
+                "input",
+                "[role='combobox']",
+                "[aria-haspopup='listbox']",
+                "mat-select",
+                ".mat-select-trigger",
+                ".mat-mdc-select-trigger",
+                ".ng-select",
+                ".ng-select-container"
+              ].join(",")
             )
-          );
+          )
+          .filter(visible);
 
-        for (const select of selects) {
+        for (
+          let i = 0;
+          i < controles.length;
+          i++
+        ) {
+          const control =
+            controles[i];
+
+          const id =
+            control.id || "";
+
+          const label =
+            id
+              ? document.querySelector(
+                  `label[for="${CSS.escape(id)}"]`
+                )
+              : null;
+
+          const wrapper =
+            control.closest(
+              [
+                "mat-form-field",
+                ".mat-mdc-form-field",
+                ".form-group",
+                ".field",
+                ".ng-select",
+                ".input-group",
+                "div"
+              ].join(",")
+            );
+
           const contexto =
             norm(
               [
-                select.name,
-                select.id,
-                select.getAttribute(
+                control.getAttribute(
                   "aria-label"
                 ),
-                select.closest("div")
-                  ?.innerText
+                control.getAttribute(
+                  "placeholder"
+                ),
+                control.getAttribute(
+                  "name"
+                ),
+                control.id,
+                label?.innerText,
+                wrapper?.innerText
               ]
                 .filter(Boolean)
                 .join(" ")
             );
 
           if (
-            !contexto.includes(
+            contexto.includes(
               campoN
             )
           ) {
-            continue;
-          }
+            if (!control.id) {
+              control.id =
+                `auto-select-${i}-${Date.now()}`;
+            }
 
-          const option =
-            Array.from(
-              select.options
-            ).find(o =>
-              norm(o.textContent)
-                .includes(valorN)
+            return (
+              "#" +
+              CSS.escape(control.id)
             );
-
-          if (!option) {
-            continue;
           }
-
-          select.value =
-            option.value;
-
-          select.dispatchEvent(
-            new Event("change", {
-              bubbles: true
-            })
-          );
-
-          return true;
         }
 
-        return false;
+        const marcadores =
+          Array.from(
+            document.querySelectorAll(
+              "label, span, p, div"
+            )
+          )
+          .filter(visible)
+          .filter(el => {
+            const t =
+              norm(
+                el.innerText ||
+                el.textContent ||
+                ""
+              );
+
+            return (
+              t === campoN ||
+              (
+                t.includes(campoN) &&
+                t.length <
+                  campoN.length + 30
+              )
+            );
+          });
+
+        for (
+          const marcador
+          of marcadores
+        ) {
+          const forId =
+            marcador
+              .getAttribute?.("for");
+
+          if (forId) {
+            const asociado =
+              document.getElementById(
+                forId
+              );
+
+            if (
+              asociado &&
+              visible(asociado)
+            ) {
+              if (!asociado.id) {
+                asociado.id =
+                  `auto-select-${Date.now()}`;
+              }
+
+              return (
+                "#" +
+                CSS.escape(
+                  asociado.id
+                )
+              );
+            }
+          }
+
+          let contenedor =
+            marcador.parentElement;
+
+          for (
+            let nivel = 0;
+            nivel < 5 &&
+            contenedor;
+            nivel++
+          ) {
+            const control =
+              contenedor.querySelector(
+                [
+                  "select",
+                  "input",
+                  "[role='combobox']",
+                  "[aria-haspopup='listbox']",
+                  "mat-select",
+                  ".mat-select-trigger",
+                  ".mat-mdc-select-trigger",
+                  ".ng-select",
+                  ".ng-select-container"
+                ].join(",")
+              );
+
+            if (
+              control &&
+              visible(control)
+            ) {
+              if (!control.id) {
+                control.id =
+                  `auto-select-${Date.now()}-${nivel}`;
+              }
+
+              return (
+                "#" +
+                CSS.escape(
+                  control.id
+                )
+              );
+            }
+
+            contenedor =
+              contenedor.parentElement;
+          }
+        }
+
+        return null;
       },
       {
-        campo,
-        valor
+        campo
       }
     );
 
-  if (nativo) {
-    await pausa(700);
-    return true;
+  if (selector) {
+    const control =
+      await page.$(selector);
+
+    if (control) {
+      const datosControl =
+        await page.evaluate(
+          el => ({
+            tag:
+              el.tagName.toLowerCase(),
+
+            role:
+              el.getAttribute(
+                "role"
+              ) || "",
+
+            readonly:
+              el.hasAttribute(
+                "readonly"
+              ),
+
+            disabled:
+              el.hasAttribute(
+                "disabled"
+              )
+          }),
+          control
+        );
+
+      if (datosControl.disabled) {
+        return false;
+      }
+
+      if (
+        datosControl.tag ===
+        "select"
+      ) {
+        const elegido =
+          await page.evaluate(
+            (el, valor) => {
+
+              function norm(t = "") {
+                return String(t)
+                  .normalize("NFD")
+                  .replace(
+                    /[\u0300-\u036f]/g,
+                    ""
+                  )
+                  .toLowerCase()
+                  .replace(
+                    /\s+/g,
+                    " "
+                  )
+                  .trim();
+              }
+
+              const buscado =
+                norm(valor);
+
+              const opcion =
+                Array.from(
+                  el.options
+                ).find(o =>
+                  norm(
+                    o.textContent
+                  ).includes(
+                    buscado
+                  )
+                );
+
+              if (!opcion) {
+                return false;
+              }
+
+              el.value =
+                opcion.value;
+
+              el.dispatchEvent(
+                new Event(
+                  "input",
+                  {
+                    bubbles: true
+                  }
+                )
+              );
+
+              el.dispatchEvent(
+                new Event(
+                  "change",
+                  {
+                    bubbles: true
+                  }
+                )
+              );
+
+              return true;
+            },
+            control,
+            valor
+          );
+
+        if (elegido) {
+          await pausa(700);
+          return true;
+        }
+      }
+
+      await control.click();
+
+      await pausa(500);
+
+      if (
+        datosControl.tag ===
+          "input" &&
+        !datosControl.readonly
+      ) {
+        await control.click({
+          clickCount: 3
+        });
+
+        await page.keyboard.press(
+          "Control+A"
+        );
+
+        await page.keyboard.type(
+          String(valor),
+          {
+            delay: 30
+          }
+        );
+
+        await pausa(500);
+      }
+
+      let elegido =
+        await clickTexto(
+          page,
+          valor,
+          {
+            exacto: true,
+            espera: 800
+          }
+        );
+
+      if (!elegido) {
+        elegido =
+          await clickTexto(
+            page,
+            valor,
+            {
+              exacto: false,
+              espera: 800
+            }
+          );
+      }
+
+      if (elegido) {
+        return true;
+      }
+
+      if (
+        datosControl.tag ===
+          "input" &&
+        !datosControl.readonly
+      ) {
+        await page.keyboard.press(
+          "ArrowDown"
+        );
+
+        await pausa(200);
+
+        await page.keyboard.press(
+          "Enter"
+        );
+
+        await pausa(700);
+
+        const seleccionado =
+          await page.evaluate(
+            (el, valor) => {
+
+              function norm(t = "") {
+                return String(t)
+                  .normalize("NFD")
+                  .replace(
+                    /[\u0300-\u036f]/g,
+                    ""
+                  )
+                  .toLowerCase()
+                  .replace(
+                    /\s+/g,
+                    " "
+                  )
+                  .trim();
+              }
+
+              const actual =
+                norm(
+                  el.value ||
+                  el.innerText ||
+                  el.textContent ||
+                  ""
+                );
+
+              return actual.includes(
+                norm(valor)
+              );
+            },
+            control,
+            valor
+          );
+
+        if (seleccionado) {
+          return true;
+        }
+      }
+    }
   }
 
-  // Dropdown Angular / Material / custom.
   const abierto =
     await clickTexto(
       page,
       campo,
       {
-        exacto: false,
+        exacto: true,
         espera: 500
       }
     );
@@ -407,15 +882,27 @@ async function seleccionarOpcion(
     return false;
   }
 
-  const elegido =
+  let elegido =
     await clickTexto(
       page,
       valor,
       {
-        exacto: false,
+        exacto: true,
         espera: 800
       }
     );
+
+  if (!elegido) {
+    elegido =
+      await clickTexto(
+        page,
+        valor,
+        {
+          exacto: false,
+          espera: 800
+        }
+      );
+  }
 
   return elegido;
 }
@@ -457,23 +944,19 @@ async function captchaVisual(page) {
 }
 
 // ========================================================
-// ESTADO DE LA PÁGINA
+// ESTADO DE PÁGINA / DIAGNÓSTICO
 // ========================================================
 
 async function estadoPagina(page) {
-  return await page.evaluate(() => ({
-    url: location.href,
+  return await page.evaluate(() => {
 
-    title:
-      document.title,
-
-    texto:
+    const texto =
       (
         document.body?.innerText ||
         ""
-      ).substring(0, 2000),
+      ).substring(0, 2500);
 
-    botones:
+    const botones =
       Array.from(
         document.querySelectorAll(
           "button, [role='button']"
@@ -489,12 +972,67 @@ async function estadoPagina(page) {
           ).trim()
         )
         .filter(Boolean)
-        .slice(0, 30),
+        .slice(0, 30);
 
-    grecaptcha:
-      typeof window.grecaptcha !==
-      "undefined"
-  }));
+    const campos =
+      Array.from(
+        document.querySelectorAll(
+          [
+            "input",
+            "select",
+            "[role='combobox']",
+            "[aria-haspopup='listbox']",
+            "mat-select"
+          ].join(",")
+        )
+      )
+        .map(el => ({
+          tag:
+            el.tagName.toLowerCase(),
+
+          id:
+            el.id || "",
+
+          name:
+            el.getAttribute(
+              "name"
+            ) || "",
+
+          role:
+            el.getAttribute(
+              "role"
+            ) || "",
+
+          ariaLabel:
+            el.getAttribute(
+              "aria-label"
+            ) || "",
+
+          placeholder:
+            el.getAttribute(
+              "placeholder"
+            ) || ""
+        }))
+        .slice(0, 30);
+
+    return {
+      url:
+        location.href,
+
+      title:
+        document.title,
+
+      texto,
+
+      botones,
+
+      campos,
+
+      grecaptcha:
+        typeof window.grecaptcha !==
+        "undefined"
+    };
+  });
 }
 
 // ========================================================
@@ -542,7 +1080,6 @@ async function esperarReserva(
         response.status(),
       data
     };
-
   } catch (_) {
     return {
       detectada: false
@@ -663,7 +1200,6 @@ async function avanzarFlujo(
   // ------------------------------------------------------
 
   if (paciente.rut) {
-
     const okRut =
       await llenarCampo(
         page,
@@ -680,8 +1216,7 @@ async function avanzarFlujo(
     if (!okRut) {
       return {
         ...(await estadoPagina(page)),
-        errorPaso: "RUT",
-        buscado: paciente.rut
+        errorPaso: "RUT"
       };
     }
   }
@@ -691,7 +1226,6 @@ async function avanzarFlujo(
   // ------------------------------------------------------
 
   if (paciente.prevision) {
-
     const okPrevision =
       await seleccionarOpcion(
         page,
@@ -705,19 +1239,21 @@ async function avanzarFlujo(
       return {
         ...(await estadoPagina(page)),
         errorPaso: "PREVISION",
-        buscado: paciente.prevision
+        buscado:
+          paciente.prevision
       };
     }
   }
 
   // ------------------------------------------------------
-  // CONTINUAR PRIMER PASO
+  // ACEPTAR / CONTINUAR PRIMER PASO
   // ------------------------------------------------------
 
   const okContinuarInicial =
     await clickTexto(
       page,
       [
+        "Aceptar",
         "Continuar",
         "Buscar"
       ],
@@ -730,7 +1266,8 @@ async function avanzarFlujo(
   if (!okContinuarInicial) {
     return {
       ...(await estadoPagina(page)),
-      errorPaso: "CONTINUAR_INICIAL"
+      errorPaso:
+        "CONTINUAR_INICIAL"
     };
   }
 
@@ -739,7 +1276,6 @@ async function avanzarFlujo(
   // ------------------------------------------------------
 
   if (reserva.especialidad) {
-
     const okEspecialidad =
       await seleccionarOpcion(
         page,
@@ -752,8 +1288,10 @@ async function avanzarFlujo(
     if (!okEspecialidad) {
       return {
         ...(await estadoPagina(page)),
-        errorPaso: "ESPECIALIDAD",
-        buscado: reserva.especialidad
+        errorPaso:
+          "ESPECIALIDAD",
+        buscado:
+          reserva.especialidad
       };
     }
   }
@@ -761,15 +1299,8 @@ async function avanzarFlujo(
   // ------------------------------------------------------
   // CENTRO
   // ------------------------------------------------------
-  //
-  // IMPORTANTE:
-  // Solo intenta centro si realmente viene reserva.centro.
-  // En nuestra llamada actual enviamos centroCodigo,
-  // por lo que NO intentará seleccionar "IPE" como texto.
-  // ------------------------------------------------------
 
   if (reserva.centro) {
-
     const okCentro =
       await seleccionarOpcion(
         page,
@@ -783,7 +1314,8 @@ async function avanzarFlujo(
       return {
         ...(await estadoPagina(page)),
         errorPaso: "CENTRO",
-        buscado: reserva.centro
+        buscado:
+          reserva.centro
       };
     }
   }
@@ -797,7 +1329,8 @@ async function avanzarFlujo(
       page,
       [
         "Buscar",
-        "Continuar"
+        "Continuar",
+        "Aceptar"
       ],
       {
         exacto: false,
@@ -808,7 +1341,8 @@ async function avanzarFlujo(
   if (!okBuscar) {
     return {
       ...(await estadoPagina(page)),
-      errorPaso: "BUSCAR_HORAS"
+      errorPaso:
+        "BUSCAR_HORAS"
     };
   }
 
@@ -817,7 +1351,6 @@ async function avanzarFlujo(
   // ------------------------------------------------------
 
   if (reserva.profesional) {
-
     const okProfesional =
       await clickTexto(
         page,
@@ -831,8 +1364,10 @@ async function avanzarFlujo(
     if (!okProfesional) {
       return {
         ...(await estadoPagina(page)),
-        errorPaso: "PROFESIONAL",
-        buscado: reserva.profesional
+        errorPaso:
+          "PROFESIONAL",
+        buscado:
+          reserva.profesional
       };
     }
   }
@@ -845,7 +1380,6 @@ async function avanzarFlujo(
     reserva.fechaTexto ||
     reserva.fecha
   ) {
-
     const okFecha =
       await clickTexto(
         page,
@@ -875,10 +1409,10 @@ async function avanzarFlujo(
   // ------------------------------------------------------
 
   if (reserva.hora) {
-
     const horaCorta =
-      String(reserva.hora)
-        .substring(0, 5);
+      String(
+        reserva.hora
+      ).substring(0, 5);
 
     const okHora =
       await clickTexto(
@@ -897,7 +1431,8 @@ async function avanzarFlujo(
       return {
         ...(await estadoPagina(page)),
         errorPaso: "HORA",
-        buscado: horaCorta
+        buscado:
+          horaCorta
       };
     }
   }
@@ -911,7 +1446,6 @@ async function avanzarFlujo(
     intento < 4;
     intento++
   ) {
-
     if (
       page
         .url()
@@ -925,7 +1459,10 @@ async function avanzarFlujo(
     const pudo =
       await clickTexto(
         page,
-        ["Continuar"],
+        [
+          "Continuar",
+          "Aceptar"
+        ],
         {
           exacto: true,
           espera: 1200
@@ -1006,7 +1543,6 @@ export default {
               env.BROWSER
             )
         });
-
       } catch (error) {
         return json(
           {
@@ -1039,8 +1575,6 @@ export default {
         const entrada =
           await request.json();
 
-        // Seguridad:
-        // nunca reservar sin confirmación explícita.
         if (
           entrada.confirmar !==
           true
@@ -1085,19 +1619,12 @@ export default {
           );
         }
 
-        // ------------------------------------------------
-        // UNA sola sesión Browser Run
-        // ------------------------------------------------
-
         browser =
           await puppeteer.launch(
             env.BROWSER,
             {
-              // Máximo práctico corto.
-              // Si algo falla y el Worker muere,
-              // la sesión expira pronto.
               keep_alive:
-                60000
+                KEEP_ALIVE_MS
             }
           );
 
@@ -1127,19 +1654,11 @@ export default {
 
         await pausa(1200);
 
-        // ------------------------------------------------
-        // Recorrer Bupa
-        // ------------------------------------------------
-
         const pagina =
           await avanzarFlujo(
             page,
             entrada
           );
-
-        // ------------------------------------------------
-        // Debemos haber llegado a confirmación
-        // ------------------------------------------------
 
         if (
           !page
@@ -1169,10 +1688,6 @@ export default {
           });
         }
 
-        // ------------------------------------------------
-        // reCAPTCHA debe estar cargado
-        // ------------------------------------------------
-
         const captchaListo =
           await page.evaluate(
             () =>
@@ -1201,18 +1716,10 @@ export default {
           });
         }
 
-        // ------------------------------------------------
-        // RESERVAR
-        // ------------------------------------------------
-
         const resultado =
           await ejecutarReserva(
             page
           );
-
-        // ------------------------------------------------
-        // ÉXITO
-        // ------------------------------------------------
 
         if (
           resultado.estado ===
@@ -1233,10 +1740,6 @@ export default {
               resultado.respuestaBupa
           });
         }
-
-        // ------------------------------------------------
-        // CAPTCHA HUMANO
-        // ------------------------------------------------
 
         if (
           resultado.estado ===
@@ -1262,10 +1765,6 @@ export default {
           });
         }
 
-        // ------------------------------------------------
-        // CUALQUIER OTRO ESTADO
-        // ------------------------------------------------
-
         const paginaFinal =
           await estadoPagina(
             page
@@ -1285,6 +1784,7 @@ export default {
         );
 
       } catch (error) {
+
         if (
           browser &&
           !mantener
@@ -1364,13 +1864,8 @@ export default {
             browser
           );
 
-        // Damos un momento a Bupa
-        // después de la resolución humana.
         await pausa(800);
 
-        // Puede que la reserva ya se haya enviado
-        // automáticamente al terminar CAPTCHA.
-        // Si no, volvemos a pulsar Reservar.
         const resultado =
           await ejecutarReserva(
             page
@@ -1436,6 +1931,7 @@ export default {
         );
 
       } catch (error) {
+
         try {
           if (browser) {
             await browser.close();
@@ -1498,6 +1994,7 @@ export default {
         });
 
       } catch (error) {
+
         return json(
           {
             ok: false,
