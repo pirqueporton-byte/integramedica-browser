@@ -1,26 +1,31 @@
 // @ts-nocheck
-
 import puppeteer from "@cloudflare/puppeteer";
 
-const AGENDA_URL =
+const API = "https://api.bupa.cl";
+
+const AGENDA =
   "https://agenda.bupa.cl/integramedica/consulta-medica/reserva-consulta-medica";
 
-const RESERVA_ENDPOINT =
-  "/agenda/ms-sap/reserva/reservahora";
-
-const KEEP_ALIVE_MS = 60000;
+const KEEP_ALIVE = 60000;
 
 
 // ========================================================
-// RESPUESTA JSON
+// JSON
 // ========================================================
 
-function json(data, status = 200) {
+function j(data, status = 200) {
+
   return new Response(
-    JSON.stringify(data, null, 2),
+    JSON.stringify(
+      data,
+      null,
+      2
+    ),
     {
       status,
+
       headers: {
+
         "content-type":
           "application/json; charset=UTF-8",
 
@@ -41,15 +46,1007 @@ function json(data, status = 200) {
 }
 
 
+const sleep =
+  ms =>
+    new Promise(
+      r =>
+        setTimeout(
+          r,
+          ms
+        )
+    );
+
+
 // ========================================================
-// PAUSA
+// RUT
 // ========================================================
 
-function pausa(ms) {
-  return new Promise(
-    resolve =>
-      setTimeout(resolve, ms)
+function rutLimpio(
+  rut = ""
+) {
+
+  const x =
+    String(rut)
+
+      .replace(
+        /\./g,
+        ""
+      )
+
+      .replace(
+        /-/g,
+        ""
+      )
+
+      .replace(
+        /\s/g,
+        ""
+      )
+
+      .toUpperCase();
+
+
+  return x.length > 1
+
+    ?
+
+    `${x.slice(0, -1)}-${x.slice(-1)}`
+
+    :
+
+    "";
+}
+
+
+// ========================================================
+// PREVISIONES
+// ========================================================
+
+function prevNombre(
+  codigo
+) {
+
+  return ({
+
+    "900001":
+      "Fonasa",
+
+    "900003":
+      "Isapre Cruz Blanca",
+
+    "900004":
+      "Isapre Banmédica",
+
+    "900006":
+      "Isapre Consalud",
+
+    "900008":
+      "Isapre Nueva Masvida",
+
+    "900012":
+      "Isapre Vida Tres",
+
+    "900013":
+      "Isapre Colmena",
+
+    "900017":
+      "Isapre Cruz del Norte",
+
+    "9000052531":
+      "Isapre Esencial",
+
+    "900002":
+      "Fundación Banco Estado",
+
+    "900283":
+      "Isalud Isapre CODELCO"
+
+  })[
+    String(
+      codigo ||
+      ""
+    )
+  ]
+
+  ||
+
+  String(
+    codigo ||
+    ""
   );
+}
+
+
+// ========================================================
+// FECHA PARA DATOSCORREO
+// ========================================================
+
+function fechaDos(
+  fecha
+) {
+
+  const [
+    y,
+    m,
+    d
+  ] =
+    String(fecha)
+      .split("-")
+      .map(Number);
+
+
+  const dt =
+    new Date(
+      Date.UTC(
+        y,
+        m - 1,
+        d
+      )
+    );
+
+
+  const dias = [
+
+    "domingo",
+
+    "lunes",
+
+    "martes",
+
+    "miércoles",
+
+    "jueves",
+
+    "viernes",
+
+    "sábado"
+  ];
+
+
+  const meses = [
+
+    "ene",
+
+    "feb",
+
+    "mar",
+
+    "abr",
+
+    "may",
+
+    "jun",
+
+    "jul",
+
+    "ago",
+
+    "sep",
+
+    "oct",
+
+    "nov",
+
+    "dic"
+  ];
+
+
+  return {
+
+    diaSeman:
+      dias[
+        dt.getUTCDay()
+      ],
+
+    mes:
+      meses[
+        m - 1
+      ],
+
+    anio:
+      String(y),
+
+    dia:
+      String(d)
+  };
+}
+
+
+// ========================================================
+// BUSCAR DATOS EN RESPUESTA PACIENTE
+// ========================================================
+
+function findValue(
+  obj,
+  keys
+) {
+
+  const wanted =
+    keys.map(
+      k =>
+        k.toLowerCase()
+    );
+
+
+  const seen =
+    new Set();
+
+
+  function walk(v) {
+
+    if (
+      !v
+
+      ||
+
+      typeof v !==
+        "object"
+
+      ||
+
+      seen.has(v)
+    ) {
+
+      return "";
+    }
+
+
+    seen.add(v);
+
+
+    for (
+      const [
+        k,
+        x
+      ]
+      of Object.entries(v)
+    ) {
+
+      if (
+
+        wanted.includes(
+          k.toLowerCase()
+        )
+
+        &&
+
+        [
+          "string",
+          "number"
+        ]
+          .includes(
+            typeof x
+          )
+
+        &&
+
+        String(x)
+          .trim()
+      ) {
+
+        return String(x)
+          .trim();
+      }
+    }
+
+
+    for (
+      const x
+      of Object.values(v)
+    ) {
+
+      if (
+        x
+
+        &&
+
+        typeof x ===
+          "object"
+      ) {
+
+        const r =
+          walk(x);
+
+
+        if (r) {
+          return r;
+        }
+      }
+    }
+
+
+    return "";
+  }
+
+
+  return walk(obj);
+}
+
+
+// ========================================================
+// TOKEN PÚBLICO BUPA
+// ========================================================
+
+async function login() {
+
+  const r =
+    await fetch(
+      `${API}/api/login`,
+      {
+        headers: {
+
+          accept:
+            "application/json"
+        }
+      }
+    );
+
+
+  if (!r.ok) {
+
+    throw new Error(
+      `Login Bupa HTTP ${r.status}`
+    );
+  }
+
+
+  const x =
+    await r.json();
+
+
+  if (
+    !x?.token
+  ) {
+
+    throw new Error(
+      "Bupa no devolvió token público"
+    );
+  }
+
+
+  return x.token;
+}
+
+
+// ========================================================
+// DATOS PACIENTE
+// ========================================================
+
+async function pacienteApi(
+  rut,
+  token
+) {
+
+  try {
+
+    const r =
+      await fetch(
+        `${API}/agenda/ms-sap/usuario/consultapaciente`,
+        {
+
+          method:
+            "POST",
+
+          headers: {
+
+            accept:
+              "application/json",
+
+            "content-type":
+              "application/json",
+
+            authorization:
+              `Bearer ${token}`
+          },
+
+          body:
+            JSON.stringify(
+              {
+
+                ConsultaPacienteReq: {
+
+                  rut
+                }
+              }
+            )
+        }
+      );
+
+
+    return r.ok
+
+      ?
+
+      await r.json()
+
+      :
+
+      {};
+
+  } catch {
+
+    return {};
+  }
+}
+
+
+// ========================================================
+// CONSTRUIR PAYLOAD FINAL
+// ========================================================
+
+function buildPayload(
+  entrada,
+  datosPaciente,
+  captcha
+) {
+
+  const p =
+    entrada.paciente ||
+    {};
+
+
+  const r =
+    entrada.reserva ||
+    {};
+
+
+  const rut =
+    rutLimpio(
+      p.rut
+    );
+
+
+  const prevision =
+    String(
+
+      p.previsionCodigo
+
+      ||
+
+      p.prevision
+
+      ||
+
+      r.prevision
+
+      ||
+
+      "900003"
+    );
+
+
+  const profesional =
+    String(
+
+      r.rutProfesional
+
+      ||
+
+      r.profesionalRut
+
+      ||
+
+      ""
+    );
+
+
+  const centro =
+    String(
+
+      r.centroCodigo
+
+      ||
+
+      r.centro
+
+      ||
+
+      ""
+    );
+
+
+  const fecha =
+    String(
+      r.fecha ||
+      ""
+    );
+
+
+  const hora =
+    String(
+
+      r.hora
+
+      ||
+
+      r.HoraInicio
+
+      ||
+
+      ""
+    );
+
+
+  const tipoPlan =
+    String(
+
+      r.tipoPlanificacion
+
+      ||
+
+      r.disponibilidad
+
+      ||
+
+      ""
+    );
+
+
+  const pobNr =
+    String(
+
+      r.pobNr
+
+      ||
+
+      r.PobNr
+
+      ||
+
+      ""
+    );
+
+
+  if (
+
+    !rut
+
+    ||
+
+    !profesional
+
+    ||
+
+    !centro
+
+    ||
+
+    !fecha
+
+    ||
+
+    !hora
+
+    ||
+
+    !tipoPlan
+
+    ||
+
+    !pobNr
+
+  ) {
+
+    throw new Error(
+      "Faltan datos obligatorios de la reserva"
+    );
+  }
+
+
+  const esp =
+    String(
+
+      r.especialidadCodigo
+
+      ||
+
+      r.especialidad
+
+      ||
+
+      "2690"
+    );
+
+
+  const espNombre =
+    r.especialidadNombre
+
+    ||
+
+    "Medicina General (mayor a 15 años)";
+
+
+  /*
+   * IMPORTANTE:
+   *
+   * El request REAL que capturaste
+   * usa Prestacion = 10T202.
+   *
+   * 11814A se utilizó en disponibilidad,
+   * no como Prestacion del POST final.
+   */
+
+  const prestacion =
+    String(
+
+      r.prestacion
+
+      ||
+
+      r.categoriaPrestacion
+
+      ||
+
+      "10T202"
+    );
+
+
+  const nombre =
+    p.nombre
+
+    ||
+
+    findValue(
+      datosPaciente,
+      [
+        "NombreCompleto",
+        "NombrePaciente",
+        "Nombre"
+      ]
+    );
+
+
+  const correo =
+    p.correo
+
+    ||
+
+    findValue(
+      datosPaciente,
+      [
+        "Correo",
+        "Email",
+        "Mail"
+      ]
+    );
+
+
+  const telefono =
+    p.telefono
+
+    ||
+
+    findValue(
+      datosPaciente,
+      [
+        "Telefono",
+        "Teléfono",
+        "Celular",
+        "Movil",
+        "Móvil"
+      ]
+    );
+
+
+  return {
+
+    captcha,
+
+
+    data: {
+
+      BupaCitaRequest: {
+
+
+        Canal:
+          "W",
+
+
+        CentroMedico:
+          centro,
+
+
+        CentroSanitario:
+          "RED",
+
+
+        Clasificacion:
+          "01",
+
+
+        Consentimiento: {
+
+          Business:
+            "",
+
+          Versions:
+            [],
+
+          AppointmentType:
+            ""
+        },
+
+
+        Correo:
+          correo ||
+          "",
+
+
+        DatosCorreo: {
+
+
+          IdReserva:
+            "",
+
+
+          Indicacion:
+
+            r.indicacion
+
+            ||
+
+            "IMPORTANTE, la reserva de hora es para pacientes mayores de 15 años.",
+
+
+          DatosPaciente: {
+
+
+            Rut:
+              rut,
+
+
+            Nombre:
+              nombre ||
+              "",
+
+
+            Prevision:
+
+              p.previsionNombre
+
+              ||
+
+              prevNombre(
+                prevision
+              ),
+
+
+            Correo:
+              correo ||
+              ""
+          },
+
+
+          DatosProfesional: {
+
+
+            Nombre:
+
+              r.profesionalNombre
+
+              ||
+
+              r.profesional
+
+              ||
+
+              "",
+
+
+            Especialidad:
+              espNombre,
+
+
+            Prestacion:
+
+              r.prestacionNombre
+
+              ||
+
+              espNombre
+          },
+
+
+          DatosReserva: {
+
+
+            Fecha:
+              fecha,
+
+
+            FechaDos:
+              fechaDos(
+                fecha
+              ),
+
+
+            CentroMedico:
+
+              r.centroNombre
+
+              ||
+
+              centro,
+
+
+            Coordenadas:
+
+              r.coordenadas
+
+              ||
+
+              "",
+
+
+            Direccion:
+
+              r.direccion
+
+              ||
+
+              ""
+          },
+
+
+          Especialidad:
+            esp,
+
+
+          Origen:
+            "integramedica",
+
+
+          PhygitalActive:
+            true,
+
+
+          Prestacion:
+            prestacion,
+
+
+          activarMensajeSieteDias:
+            false
+        },
+
+
+        Duracion:
+
+          String(
+            r.duracion ||
+            "0015"
+          ),
+
+
+        Especialidad:
+          esp,
+
+
+        FechaCita:
+          fecha,
+
+
+        HoraCita:
+          hora,
+
+
+        IdCita:
+          "",
+
+
+        IdWeb:
+          "agenda-web-v3",
+
+
+        NuevaFecha:
+          "",
+
+
+        NuevaHora:
+          "",
+
+
+        NuevoPaciente:
+          "",
+
+
+        Operacion:
+          "INS",
+
+
+        Prestacion:
+          prestacion,
+
+
+        Prevision:
+          prevision,
+
+
+        RutProfesional:
+          profesional,
+
+
+        RutUsuario:
+          rut,
+
+
+        Telefono:
+          telefono ||
+          "",
+
+
+        TipoPlanificacion:
+          tipoPlan,
+
+
+        Url:
+
+          r.urlConfirmacion
+
+          ||
+
+          "https://agenda.bupa.cl/integramedica/agenda-consulta-medica/reserva-confirmar-hora",
+
+
+        acronimoPadre:
+          "CD",
+
+
+        busquedaPor:
+
+          Number.isFinite(
+            Number(
+              r.busquedaPor
+            )
+          )
+
+            ?
+
+            Number(
+              r.busquedaPor
+            )
+
+            :
+
+            4,
+
+
+        captureConsentAcceptance:
+          "",
+
+
+        idCita:
+          "",
+
+
+        isContingencia:
+          "true",
+
+
+        pobNr
+      }
+    },
+
+
+    isUserLogged:
+      false,
+
+
+    kibanaCov19: {
+
+      business:
+        "integramedica",
+
+      clasificacion:
+        "01",
+
+      valueScore:
+        ""
+    },
+
+
+    valueScore:
+      ""
+  };
 }
 
 
@@ -57,10 +1054,14 @@ function pausa(ms) {
 // LIVE VIEW
 // ========================================================
 
-async function liveView(page) {
+async function liveView(
+  page
+) {
 
   const cdp =
-    await page.createCDPSession();
+    await page
+      .createCDPSession();
+
 
   const {
     devtoolsFrontendUrl
@@ -68,33 +1069,34 @@ async function liveView(page) {
     await cdp.send(
       "Cloudflare.getLiveView",
       {
-        mode: "tab",
+
+        mode:
+          "tab",
 
         expiresInMs:
           300000
       }
     );
 
+
   return devtoolsFrontendUrl;
 }
 
 
 // ========================================================
-// OBTENER PÁGINA DE AGENDA
+// OBTENER PÁGINA
 // ========================================================
 
-async function obtenerPagina(
+async function agendaPage(
   browser
 ) {
 
   const pages =
     await browser.pages();
 
-  if (!pages.length) {
-    return await browser.newPage();
-  }
 
   return (
+
     pages.find(
       p =>
         p.url()
@@ -102,1859 +1104,436 @@ async function obtenerPagina(
             "agenda.bupa.cl"
           )
     )
+
     ||
+
     pages[
       pages.length - 1
     ]
+
+    ||
+
+    await browser
+      .newPage()
   );
 }
 
 
 // ========================================================
-// CLICK POR TEXTO
+// DESCUBRIR RECAPTCHA
 // ========================================================
 
-async function clickTexto(
-  page,
-  textos,
-  opciones = {}
-) {
-
-  if (!Array.isArray(textos)) {
-    textos = [textos];
-  }
-
-  const exacto =
-    opciones.exacto ??
-    false;
-
-
-  const resultado =
-    await page.evaluate(
-
-      ({
-        textos,
-        exacto
-      }) => {
-
-        function norm(
-          texto = ""
-        ) {
-
-          return String(texto)
-            .normalize("NFD")
-            .replace(
-              /[\u0300-\u036f]/g,
-              ""
-            )
-            .toLowerCase()
-            .replace(
-              /\s+/g,
-              " "
-            )
-            .trim();
-        }
-
-
-        function visible(el) {
-
-          if (!el) {
-            return false;
-          }
-
-          const rect =
-            el.getBoundingClientRect();
-
-          const style =
-            getComputedStyle(el);
-
-          return (
-            rect.width > 0
-            &&
-            rect.height > 0
-            &&
-            style.display !==
-              "none"
-            &&
-            style.visibility !==
-              "hidden"
-            &&
-            style.opacity !==
-              "0"
-          );
-        }
-
-
-        function textoElemento(
-          el
-        ) {
-
-          return norm(
-
-            el.innerText
-
-            ||
-
-            el.textContent
-
-            ||
-
-            el.getAttribute(
-              "aria-label"
-            )
-
-            ||
-
-            el.getAttribute(
-              "title"
-            )
-
-            ||
-
-            el.getAttribute(
-              "placeholder"
-            )
-
-            ||
-
-            el.value
-
-            ||
-
-            ""
-          );
-        }
-
-
-        const selectorInteractivo =
-          [
-            "button",
-
-            "a",
-
-            "[role='button']",
-
-            "[role='option']",
-
-            "[role='combobox']",
-
-            "[aria-haspopup='listbox']",
-
-            "li",
-
-            "mat-option",
-
-            ".mat-option",
-
-            ".mat-mdc-option",
-
-            ".ng-option",
-
-            "mat-select",
-
-            ".mat-select-trigger",
-
-            ".mat-mdc-select-trigger",
-
-            ".ng-select-container",
-
-            "[tabindex]"
-          ].join(",");
-
-
-        const buscados =
-          textos
-            .map(norm)
-            .filter(Boolean);
-
-
-        const interactivos =
-          Array.from(
-            document
-              .querySelectorAll(
-                selectorInteractivo
-              )
-          )
-          .filter(visible);
-
-
-        const fallback =
-          Array.from(
-            document
-              .querySelectorAll(
-                "label, span, div, p"
-              )
-          )
-          .filter(visible);
-
-
-        const candidatos =
-          [
-            ...interactivos,
-            ...fallback
-          ];
-
-
-        for (
-          const buscado
-          of buscados
-        ) {
-
-          const coincidencias =
-            candidatos
-              .filter(
-                el => {
-
-                  const texto =
-                    textoElemento(
-                      el
-                    );
-
-                  if (!texto) {
-                    return false;
-                  }
-
-                  if (exacto) {
-                    return (
-                      texto ===
-                      buscado
-                    );
-                  }
-
-                  return (
-                    texto ===
-                      buscado
-
-                    ||
-
-                    texto.includes(
-                      buscado
-                    )
-                  );
-                }
-              );
-
-
-          coincidencias.sort(
-            (a, b) => {
-
-              const textoA =
-                textoElemento(a);
-
-              const textoB =
-                textoElemento(b);
-
-
-              const exactoA =
-                textoA ===
-                buscado
-                  ? 0
-                  : 1;
-
-              const exactoB =
-                textoB ===
-                buscado
-                  ? 0
-                  : 1;
-
-
-              if (
-                exactoA !==
-                exactoB
-              ) {
-
-                return (
-                  exactoA -
-                  exactoB
-                );
-              }
-
-
-              const interactivoA =
-                a.matches(
-                  selectorInteractivo
-                )
-                  ? 0
-                  : 1;
-
-              const interactivoB =
-                b.matches(
-                  selectorInteractivo
-                )
-                  ? 0
-                  : 1;
-
-
-              if (
-                interactivoA !==
-                interactivoB
-              ) {
-
-                return (
-                  interactivoA -
-                  interactivoB
-                );
-              }
-
-
-              if (
-                textoA.length !==
-                textoB.length
-              ) {
-
-                return (
-                  textoA.length -
-                  textoB.length
-                );
-              }
-
-
-              const rectA =
-                a.getBoundingClientRect();
-
-              const rectB =
-                b.getBoundingClientRect();
-
-
-              return (
-                (
-                  rectA.width *
-                  rectA.height
-                )
-
-                -
-
-                (
-                  rectB.width *
-                  rectB.height
-                )
-              );
-            }
-          );
-
-
-          if (
-            !coincidencias.length
-          ) {
-
-            continue;
-          }
-
-
-          const base =
-            coincidencias[0];
-
-
-          const clickable =
-            base.closest(
-              selectorInteractivo
-            )
-            ||
-            base;
-
-
-          if (
-            !visible(clickable)
-          ) {
-
-            continue;
-          }
-
-
-          clickable
-            .scrollIntoView(
-              {
-                block:
-                  "center",
-
-                inline:
-                  "center"
-              }
-            );
-
-
-          clickable.click();
-
-
-          return true;
-        }
-
-
-        return false;
-
-      },
-
-      {
-        textos,
-        exacto
-      }
-    );
-
-
-  if (resultado) {
-
-    await pausa(
-      opciones.espera ??
-      700
-    );
-  }
-
-
-  return resultado;
-}
-
-
-// ========================================================
-// LLENAR CAMPO
-// ========================================================
-
-async function llenarCampo(
-  page,
-  nombres,
-  valor
-) {
-
-  if (
-    !Array.isArray(
-      nombres
-    )
-  ) {
-
-    nombres = [
-      nombres
-    ];
-  }
-
-
-  const selector =
-    await page.evaluate(
-
-      nombres => {
-
-        function norm(
-          texto = ""
-        ) {
-
-          return String(texto)
-            .normalize("NFD")
-            .replace(
-              /[\u0300-\u036f]/g,
-              ""
-            )
-            .toLowerCase()
-            .replace(
-              /\s+/g,
-              " "
-            )
-            .trim();
-        }
-
-
-        function visible(el) {
-
-          if (!el) {
-            return false;
-          }
-
-          const rect =
-            el.getBoundingClientRect();
-
-          const style =
-            getComputedStyle(el);
-
-          return (
-            rect.width > 0
-            &&
-            rect.height > 0
-            &&
-            style.display !==
-              "none"
-            &&
-            style.visibility !==
-              "hidden"
-          );
-        }
-
-
-        const buscados =
-          nombres.map(
-            norm
-          );
-
-
-        const inputs =
-          Array.from(
-            document
-              .querySelectorAll(
-                "input, textarea"
-              )
-          )
-          .filter(
-            visible
-          );
-
-
-        for (
-          let i = 0;
-          i < inputs.length;
-          i++
-        ) {
-
-          const input =
-            inputs[i];
-
-
-          const id =
-            input.id ||
-            "";
-
-
-          const label =
-            id
-
-              ?
-
-              document
-                .querySelector(
-                  `label[for="${CSS.escape(id)}"]`
-                )
-
-              :
-
-              null;
-
-
-          const wrapper =
-            input.closest(
-              [
-                "mat-form-field",
-
-                ".mat-mdc-form-field",
-
-                ".form-group",
-
-                ".field",
-
-                "div",
-
-                "form"
-              ].join(",")
-            );
-
-
-          const contexto =
-            norm(
-              [
-                input.placeholder,
-
-                input.name,
-
-                input.id,
-
-                input.getAttribute(
-                  "aria-label"
-                ),
-
-                label?.innerText,
-
-                wrapper?.innerText
-              ]
-              .filter(Boolean)
-              .join(" ")
-            );
-
-
-          if (
-            buscados.some(
-              buscado =>
-                contexto.includes(
-                  buscado
-                )
-            )
-          ) {
-
-            if (
-              !input.id
-            ) {
-
-              input.id =
-                `auto-field-${i}-${Date.now()}`;
-            }
-
-
-            return (
-              "#"
-              +
-              CSS.escape(
-                input.id
-              )
-            );
-          }
-        }
-
-
-        return null;
-
-      },
-
-      nombres
-    );
-
-
-  if (!selector) {
-    return false;
-  }
-
-
-  const input =
-    await page.$(
-      selector
-    );
-
-
-  if (!input) {
-    return false;
-  }
-
-
-  /*
-   * No usamos Control+A.
-   *
-   * Triple click selecciona
-   * el contenido y Backspace
-   * lo limpia.
-   */
-
-  await input.click(
-    {
-      clickCount:
-        3
-    }
-  );
-
-
-  await page
-    .keyboard
-    .press(
-      "Backspace"
-    );
-
-
-  await input.type(
-    String(valor),
-    {
-      delay:
-        30
-    }
-  );
-
-
-  /*
-   * Angular puede depender
-   * de los eventos input/change.
-   */
-
-  await page.evaluate(
-
-    el => {
-
-      el.dispatchEvent(
-        new Event(
-          "input",
-          {
-            bubbles:
-              true
-          }
-        )
-      );
-
-
-      el.dispatchEvent(
-        new Event(
-          "change",
-          {
-            bubbles:
-              true
-          }
-        )
-      );
-
-    },
-
-    input
-  );
-
-
-  await pausa(
-    500
-  );
-
-
-  return true;
-}
-
-
-// ========================================================
-// SELECCIONAR OPCIÓN
-// ========================================================
-
-async function seleccionarOpcion(
-  page,
-  campo,
-  valor
-) {
-
-  /*
-   * Buscamos primero
-   * el control REAL asociado
-   * al texto del campo:
-   *
-   * Previsión
-   * Especialidad
-   * Centro
-   */
-
-  const selector =
-    await page.evaluate(
-
-      campo => {
-
-        function norm(
-          texto = ""
-        ) {
-
-          return String(texto)
-            .normalize("NFD")
-            .replace(
-              /[\u0300-\u036f]/g,
-              ""
-            )
-            .toLowerCase()
-            .replace(
-              /\s+/g,
-              " "
-            )
-            .trim();
-        }
-
-
-        function visible(el) {
-
-          if (!el) {
-            return false;
-          }
-
-          const rect =
-            el.getBoundingClientRect();
-
-          const style =
-            getComputedStyle(el);
-
-
-          return (
-            rect.width > 0
-            &&
-            rect.height > 0
-            &&
-            style.display !==
-              "none"
-            &&
-            style.visibility !==
-              "hidden"
-          );
-        }
-
-
-        const campoNormalizado =
-          norm(campo);
-
-
-        const controlSelector =
-          [
-            "select",
-
-            "input",
-
-            "[role='combobox']",
-
-            "[aria-haspopup='listbox']",
-
-            "mat-select",
-
-            ".mat-select-trigger",
-
-            ".mat-mdc-select-trigger",
-
-            ".ng-select",
-
-            ".ng-select-container"
-          ].join(",");
-
-
-        // ---------------------------------
-        // 1. LABEL / TEXTO DEL CAMPO
-        // ---------------------------------
-
-        const marcadores =
-          Array.from(
-            document
-              .querySelectorAll(
-                "label, span, p, div"
-              )
-          )
-          .filter(
-            visible
-          )
-          .filter(
-            el => {
-
-              const texto =
-                norm(
-                  el.innerText
-                  ||
-                  el.textContent
-                  ||
-                  ""
-                );
-
-
-              return (
-
-                texto ===
-                  campoNormalizado
-
-                ||
-
-                (
-                  texto.includes(
-                    campoNormalizado
-                  )
-
-                  &&
-
-                  texto.length <=
-                    campoNormalizado.length
-                    +
-                    30
-                )
-              );
-            }
-          )
-          .sort(
-            (a, b) => {
-
-              const textoA =
-                norm(
-                  a.innerText
-                  ||
-                  a.textContent
-                  ||
-                  ""
-                );
-
-              const textoB =
-                norm(
-                  b.innerText
-                  ||
-                  b.textContent
-                  ||
-                  ""
-                );
-
-
-              return (
-                textoA.length -
-                textoB.length
-              );
-            }
-          );
-
-
-        for (
-          const marcador
-          of marcadores
-        ) {
-
-          const forId =
-            marcador
-              .getAttribute?.(
-                "for"
-              );
-
-
-          if (forId) {
-
-            const asociado =
-              document
-                .getElementById(
-                  forId
-                );
-
-
-            if (
-              asociado
-              &&
-              visible(asociado)
-            ) {
-
-              if (
-                !asociado.id
-              ) {
-
-                asociado.id =
-                  `auto-select-${Date.now()}`;
-              }
-
-
-              return (
-                "#"
-                +
-                CSS.escape(
-                  asociado.id
-                )
-              );
-            }
-          }
-
-
-          /*
-           * Si no usa label-for,
-           * subimos por el DOM
-           * buscando combobox,
-           * mat-select,
-           * ng-select, etc.
-           */
-
-          let contenedor =
-            marcador.parentElement;
-
-
-          for (
-            let nivel = 0;
-
-            nivel < 5
-            &&
-            contenedor;
-
-            nivel++
-          ) {
-
-            const control =
-              contenedor
-                .querySelector(
-                  controlSelector
-                );
-
-
-            if (
-              control
-              &&
-              visible(control)
-            ) {
-
-              if (
-                !control.id
-              ) {
-
-                control.id =
-                  `auto-select-${Date.now()}-${nivel}`;
-              }
-
-
-              return (
-                "#"
-                +
-                CSS.escape(
-                  control.id
-                )
-              );
-            }
-
-
-            contenedor =
-              contenedor
-                .parentElement;
-          }
-        }
-
-
-        // ---------------------------------
-        // 2. ATRIBUTOS DEL CONTROL
-        // ---------------------------------
-
-        const controles =
-          Array.from(
-            document
-              .querySelectorAll(
-                controlSelector
-              )
-          )
-          .filter(
-            visible
-          );
-
-
-        for (
-          let i = 0;
-          i < controles.length;
-          i++
-        ) {
-
-          const control =
-            controles[i];
-
-
-          const id =
-            control.id ||
-            "";
-
-
-          const label =
-            id
-
-              ?
-
-              document
-                .querySelector(
-                  `label[for="${CSS.escape(id)}"]`
-                )
-
-              :
-
-              null;
-
-
-          const wrapper =
-            control.closest(
-              [
-                "mat-form-field",
-
-                ".mat-mdc-form-field",
-
-                ".form-group",
-
-                ".field",
-
-                ".ng-select",
-
-                ".input-group",
-
-                "div"
-              ].join(",")
-            );
-
-
-          const contexto =
-            norm(
-              [
-                control.getAttribute(
-                  "aria-label"
-                ),
-
-                control.getAttribute(
-                  "placeholder"
-                ),
-
-                control.getAttribute(
-                  "name"
-                ),
-
-                control.id,
-
-                label?.innerText,
-
-                wrapper?.innerText
-              ]
-              .filter(Boolean)
-              .join(" ")
-            );
-
-
-          if (
-            contexto.includes(
-              campoNormalizado
-            )
-          ) {
-
-            if (
-              !control.id
-            ) {
-
-              control.id =
-                `auto-select-${i}-${Date.now()}`;
-            }
-
-
-            return (
-              "#"
-              +
-              CSS.escape(
-                control.id
-              )
-            );
-          }
-        }
-
-
-        return null;
-
-      },
-
-      campo
-    );
-
-
-  // =====================================================
-  // SI ENCONTRAMOS CONTROL REAL
-  // =====================================================
-
-  if (selector) {
-
-    const control =
-      await page.$(
-        selector
-      );
-
-
-    if (control) {
-
-      const datos =
-        await page.evaluate(
-
-          el => ({
-
-            tag:
-              el.tagName
-                .toLowerCase(),
-
-            readonly:
-              el.hasAttribute(
-                "readonly"
-              ),
-
-            disabled:
-              (
-                el.hasAttribute(
-                  "disabled"
-                )
-
-                ||
-
-                el.getAttribute(
-                  "aria-disabled"
-                ) ===
-                "true"
-              )
-          }),
-
-          control
-        );
-
-
-      if (
-        datos.disabled
-      ) {
-
-        return false;
-      }
-
-
-      // ---------------------------------
-      // SELECT HTML NATIVO
-      // ---------------------------------
-
-      if (
-        datos.tag ===
-        "select"
-      ) {
-
-        const seleccionado =
-          await page.evaluate(
-
-            (
-              el,
-              valor
-            ) => {
-
-              function norm(
-                texto = ""
-              ) {
-
-                return String(texto)
-                  .normalize(
-                    "NFD"
-                  )
-                  .replace(
-                    /[\u0300-\u036f]/g,
-                    ""
-                  )
-                  .toLowerCase()
-                  .replace(
-                    /\s+/g,
-                    " "
-                  )
-                  .trim();
-              }
-
-
-              const buscado =
-                norm(valor);
-
-
-              const opcion =
-                Array.from(
-                  el.options
-                )
-                .find(
-                  opcion =>
-                    norm(
-                      opcion.textContent
-                    )
-                    .includes(
-                      buscado
-                    )
-                );
-
-
-              if (!opcion) {
-                return false;
-              }
-
-
-              el.value =
-                opcion.value;
-
-
-              el.dispatchEvent(
-                new Event(
-                  "input",
-                  {
-                    bubbles:
-                      true
-                  }
-                )
-              );
-
-
-              el.dispatchEvent(
-                new Event(
-                  "change",
-                  {
-                    bubbles:
-                      true
-                  }
-                )
-              );
-
-
-              return true;
-
-            },
-
-            control,
-            valor
-          );
-
-
-        if (
-          seleccionado
-        ) {
-
-          await pausa(
-            700
-          );
-
-          return true;
-        }
-      }
-
-
-      // ---------------------------------
-      // ANGULAR / MATERIAL / CUSTOM
-      // ---------------------------------
-
-      await control.click();
-
-      await pausa(
-        500
-      );
-
-
-      /*
-       * Si es input editable,
-       * escribimos la opción.
-       *
-       * Nuevamente:
-       * NO Control+A.
-       */
-
-      if (
-        datos.tag ===
-          "input"
-        &&
-        !datos.readonly
-      ) {
-
-        await control.click(
-          {
-            clickCount:
-              3
-          }
-        );
-
-
-        await page
-          .keyboard
-          .press(
-            "Backspace"
-          );
-
-
-        await control.type(
-          String(valor),
-          {
-            delay:
-              30
-          }
-        );
-
-
-        await pausa(
-          500
-        );
-      }
-
-
-      // ---------------------------------
-      // OPCIÓN EXACTA
-      // ---------------------------------
-
-      let elegido =
-        await clickTexto(
-          page,
-          valor,
-          {
-            exacto:
-              true,
-
-            espera:
-              800
-          }
-        );
-
-
-      // ---------------------------------
-      // OPCIÓN PARCIAL
-      // ---------------------------------
-
-      if (!elegido) {
-
-        elegido =
-          await clickTexto(
-            page,
-            valor,
-            {
-              exacto:
-                false,
-
-              espera:
-                800
-            }
-          );
-      }
-
-
-      if (elegido) {
-        return true;
-      }
-
-
-      // ---------------------------------
-      // AUTOCOMPLETE
-      // ---------------------------------
-
-      if (
-        datos.tag ===
-          "input"
-        &&
-        !datos.readonly
-      ) {
-
-        await page
-          .keyboard
-          .press(
-            "ArrowDown"
-          );
-
-
-        await pausa(
-          200
-        );
-
-
-        await page
-          .keyboard
-          .press(
-            "Enter"
-          );
-
-
-        await pausa(
-          700
-        );
-
-
-        const seleccionado =
-          await page.evaluate(
-
-            (
-              el,
-              valor
-            ) => {
-
-              function norm(
-                texto = ""
-              ) {
-
-                return String(texto)
-                  .normalize(
-                    "NFD"
-                  )
-                  .replace(
-                    /[\u0300-\u036f]/g,
-                    ""
-                  )
-                  .toLowerCase()
-                  .replace(
-                    /\s+/g,
-                    " "
-                  )
-                  .trim();
-              }
-
-
-              const actual =
-                norm(
-
-                  el.value
-
-                  ||
-
-                  el.innerText
-
-                  ||
-
-                  el.textContent
-
-                  ||
-
-                  ""
-                );
-
-
-              return (
-                actual.includes(
-                  norm(valor)
-                )
-              );
-
-            },
-
-            control,
-            valor
-          );
-
-
-        if (
-          seleccionado
-        ) {
-
-          return true;
-        }
-      }
-    }
-  }
-
-
-  // =====================================================
-  // FALLBACK
-  // =====================================================
-
-  const abierto =
-    await clickTexto(
-      page,
-      campo,
-      {
-        exacto:
-          true,
-
-        espera:
-          500
-      }
-    );
-
-
-  if (!abierto) {
-    return false;
-  }
-
-
-  let elegido =
-    await clickTexto(
-      page,
-      valor,
-      {
-        exacto:
-          true,
-
-        espera:
-          800
-      }
-    );
-
-
-  if (!elegido) {
-
-    elegido =
-      await clickTexto(
-        page,
-        valor,
-        {
-          exacto:
-            false,
-
-          espera:
-            800
-        }
-      );
-  }
-
-
-  return elegido;
-}
-
-
-// ========================================================
-// DETECTAR CAPTCHA VISUAL
-// ========================================================
-
-async function captchaVisual(
+async function captchaInfo(
   page
 ) {
 
   return await page.evaluate(
-    () => {
-
-      const iframes =
-        Array.from(
-          document
-            .querySelectorAll(
-              "iframe"
-            )
-        );
+    async () => {
 
 
-      return iframes.some(
-        frame => {
+      const valid =
+        x =>
+
+          typeof x ===
+            "string"
+
+          &&
+
+          /^6L[A-Za-z0-9_-]{20,}$/
+            .test(x);
+
+
+      let siteKey =
+        "";
+
+
+      let action =
+        "";
+
+
+      // --------------------------------------------
+      // data-sitekey
+      // --------------------------------------------
+
+      const el =
+        document
+          .querySelector(
+            "[data-sitekey]"
+          );
+
+
+      if (el) {
+
+        siteKey =
+          el.getAttribute(
+            "data-sitekey"
+          )
+
+          ||
+
+          "";
+      }
+
+
+      // --------------------------------------------
+      // Script ?render=SITEKEY
+      // --------------------------------------------
+
+      if (!siteKey) {
+
+        for (
+          const s
+          of Array.from(
+            document.scripts
+          )
+        ) {
 
           const src =
-            frame.src ||
+            s.src ||
             "";
 
 
           if (
-            !/recaptcha|captcha/i
+            !/recaptcha/i
               .test(src)
           ) {
 
-            return false;
+            continue;
           }
 
 
-          const rect =
-            frame
-              .getBoundingClientRect();
+          try {
+
+            const render =
+              new URL(
+                src,
+                location.href
+              )
+              .searchParams
+              .get(
+                "render"
+              );
 
 
-          return (
-            rect.width > 100
-            &&
-            rect.height > 100
-          );
+            if (
+
+              render
+
+              &&
+
+              render !==
+                "explicit"
+
+              &&
+
+              valid(render)
+
+            ) {
+
+              siteKey =
+                render;
+
+              break;
+            }
+
+          } catch {}
         }
-      );
-    }
-  );
-}
-
-
-// ========================================================
-// ESTADO DE PÁGINA
-// ========================================================
-
-async function estadoPagina(
-  page
-) {
-
-  return await page.evaluate(
-    () => ({
-
-      url:
-        location.href,
-
-
-      title:
-        document.title,
-
-
-      texto:
-        (
-          document
-            .body
-            ?.innerText
-          ||
-          ""
-        )
-        .substring(
-          0,
-          2500
-        ),
-
-
-      botones:
-        Array.from(
-          document
-            .querySelectorAll(
-              [
-                "button",
-                "[role='button']"
-              ].join(",")
-            )
-        )
-        .map(
-          el =>
-            (
-              el.innerText
-
-              ||
-
-              el.getAttribute(
-                "aria-label"
-              )
-
-              ||
-
-              ""
-            )
-            .trim()
-        )
-        .filter(Boolean)
-        .slice(
-          0,
-          30
-        ),
-
-
-      campos:
-        Array.from(
-          document
-            .querySelectorAll(
-              [
-                "input",
-
-                "select",
-
-                "[role='combobox']",
-
-                "[aria-haspopup='listbox']",
-
-                "mat-select"
-              ].join(",")
-            )
-        )
-        .map(
-          el => ({
-
-            tag:
-              el.tagName
-                .toLowerCase(),
-
-            id:
-              el.id ||
-              "",
-
-            name:
-              el.getAttribute(
-                "name"
-              )
-              ||
-              "",
-
-            role:
-              el.getAttribute(
-                "role"
-              )
-              ||
-              "",
-
-            ariaLabel:
-              el.getAttribute(
-                "aria-label"
-              )
-              ||
-              "",
-
-            placeholder:
-              el.getAttribute(
-                "placeholder"
-              )
-              ||
-              "",
-
-            value:
-              el.value
-              ||
-              el.innerText
-              ||
-              ""
-          })
-        )
-        .slice(
-          0,
-          30
-        ),
-
-
-      grecaptcha:
-        typeof window
-          .grecaptcha
-        !==
-        "undefined"
-    })
-  );
-}
-
-
-// ========================================================
-// ESPERAR RESPUESTA DE RESERVA
-// ========================================================
-
-async function esperarReserva(
-  page,
-  timeout = 25000
-) {
-
-  try {
-
-    const response =
-      await page
-        .waitForResponse(
-
-          response =>
-
-            response
-              .url()
-              .includes(
-                RESERVA_ENDPOINT
-              )
-
-            &&
-
-            response
-              .request()
-              .method()
-            ===
-            "POST",
-
-          {
-            timeout
-          }
-        );
-
-
-    const texto =
-      await response.text();
-
-
-    let data;
-
-
-    try {
-
-      data =
-        JSON.parse(
-          texto
-        );
-
-    } catch {
-
-      data = {
-        raw:
-          texto
-      };
-    }
-
-
-    return {
-
-      detectada:
-        true,
-
-      httpStatus:
-        response.status(),
-
-      data
-    };
-
-
-  } catch {
-
-    return {
-
-      detectada:
-        false
-    };
-  }
-}
-
-
-// ========================================================
-// EJECUTAR RESERVA
-// ========================================================
-
-async function ejecutarReserva(
-  page
-) {
-
-  /*
-   * Empezamos a escuchar
-   * antes de pulsar Reservar.
-   */
-
-  const esperaReserva =
-    esperarReserva(
-      page,
-      25000
-    );
-
-
-  const click =
-    await clickTexto(
-      page,
-      [
-        "Reservar"
-      ],
-      {
-        exacto:
-          true,
-
-        espera:
-          200
       }
+
+
+      // --------------------------------------------
+      // Config interna grecaptcha
+      // --------------------------------------------
+
+      if (
+
+        !siteKey
+
+        &&
+
+        window
+          .___grecaptcha_cfg
+          ?.clients
+
+      ) {
+
+        const seen =
+          new Set();
+
+
+        function walk(
+          o,
+          depth = 0
+        ) {
+
+          if (
+
+            !o
+
+            ||
+
+            typeof o !==
+              "object"
+
+            ||
+
+            depth > 8
+
+            ||
+
+            seen.has(o)
+
+          ) {
+
+            return "";
+          }
+
+
+          seen.add(o);
+
+
+          for (
+            const [
+              k,
+              v
+            ]
+            of Object.entries(o)
+          ) {
+
+            if (
+
+              typeof v ===
+                "string"
+
+              &&
+
+              valid(v)
+
+              &&
+
+              (
+                /sitekey/i
+                  .test(k)
+
+                ||
+
+                valid(v)
+              )
+
+            ) {
+
+              return v;
+            }
+          }
+
+
+          for (
+            const v
+            of Object.values(o)
+          ) {
+
+            if (
+
+              v
+
+              &&
+
+              typeof v ===
+                "object"
+
+            ) {
+
+              const r =
+                walk(
+                  v,
+                  depth + 1
+                );
+
+
+              if (r) {
+                return r;
+              }
+            }
+          }
+
+
+          return "";
+        }
+
+
+        siteKey =
+          walk(
+            window
+              .___grecaptcha_cfg
+              .clients
+          );
+      }
+
+
+      // --------------------------------------------
+      // Buscar action usada por el frontend
+      // --------------------------------------------
+
+      const sameOriginScripts =
+        Array.from(
+          document.scripts
+        )
+
+        .map(
+          s =>
+            s.src
+        )
+
+        .filter(Boolean)
+
+        .filter(
+          src => {
+
+            try {
+
+              return (
+                new URL(
+                  src,
+                  location.href
+                )
+                .origin
+
+                ===
+
+                location.origin
+              );
+
+            } catch {
+
+              return false;
+            }
+          }
+        )
+
+        .slice(
+          0,
+          20
+        );
+
+
+      for (
+        const src
+        of sameOriginScripts
+      ) {
+
+        try {
+
+          const txt =
+            await fetch(src)
+              .then(
+                r =>
+                  r.text()
+              );
+
+
+          if (
+            !/grecaptcha|recaptcha/i
+              .test(txt)
+          ) {
+
+            continue;
+          }
+
+
+          const m =
+
+            txt.match(
+              /grecaptcha(?:\.enterprise)?\.execute\([^)]{0,500}?action\s*:\s*["'`]([^"'`]+)["'`]/i
+            )
+
+            ||
+
+            txt.match(
+              /recaptcha[^]{0,500}?action\s*:\s*["'`]([^"'`]+)["'`]/i
+            );
+
+
+          if (
+            m?.[1]
+          ) {
+
+            action =
+              m[1];
+
+            break;
+          }
+
+        } catch {}
+      }
+
+
+      return {
+
+        siteKey,
+
+        action,
+
+        loaded:
+
+          typeof window
+            .grecaptcha
+
+          !==
+
+          "undefined"
+      };
+
+    }
+  );
+}
+
+
+// ========================================================
+// INICIAR CAPTCHA LEGÍTIMO
+// ========================================================
+
+async function startCaptcha(
+  page
+) {
+
+  for (
+    let i = 0;
+    i < 20;
+    i++
+  ) {
+
+    if (
+      await page.evaluate(
+        () =>
+
+          typeof window
+            .grecaptcha
+
+          !==
+
+          "undefined"
+      )
+    ) {
+
+      break;
+    }
+
+
+    await sleep(
+      250
+    );
+  }
+
+
+  const info =
+    await captchaInfo(
+      page
     );
 
 
-  if (!click) {
+  if (
+    !info.loaded
+  ) {
 
     return {
 
@@ -1962,75 +1541,291 @@ async function ejecutarReserva(
         false,
 
       estado:
-        "boton_reservar_no_encontrado"
+        "recaptcha_no_cargado",
+
+      info
     };
   }
 
 
-  const reserva =
-    await esperaReserva;
-
-
-  // =====================================================
-  // BUPA RESPONDIÓ
-  // =====================================================
-
   if (
-    reserva.detectada
+    !info.siteKey
   ) {
 
-    const data =
-      reserva.data;
+    return {
+
+      ok:
+        false,
+
+      estado:
+        "sitekey_no_encontrada",
+
+      info
+    };
+  }
 
 
-    const idCita =
-      data
-        ?.data
-        ?.IdCita
+  const action =
+    info.action
 
-      ||
+    ||
 
-      data
-        ?.IdCita
-
-      ||
-
-      data
-        ?.data
-        ?.idCita
-
-      ||
-
-      "";
+    "reservahora";
 
 
-    const tipo =
-      data
-        ?.data
-        ?.Estatus
-        ?.Tipo;
+  const start =
+    await page.evaluate(
+
+      ({
+        siteKey,
+        action
+      }) => {
 
 
-    if (
-      reserva.httpStatus >=
-        200
+        window
+          .__BUPA_CAPTCHA_TOKEN__ =
+            "";
 
-      &&
 
-      reserva.httpStatus <
-        300
+        window
+          .__BUPA_CAPTCHA_ERROR__ =
+            "";
 
-      &&
 
-      (
-        idCita
+        const gre =
 
-        ||
+          window
+            .grecaptcha
+            ?.enterprise
 
-        tipo ===
-          "S"
-      )
-    ) {
+          ||
+
+          window
+            .grecaptcha;
+
+
+        const save =
+          t => {
+
+            if (t) {
+
+              window
+                .__BUPA_CAPTCHA_TOKEN__ =
+                  t;
+            }
+          };
+
+
+        // ----------------------------------------
+        // v3 / enterprise
+        // ----------------------------------------
+
+        try {
+
+          const x =
+            gre.execute(
+              siteKey,
+              {
+                action
+              }
+            );
+
+
+          if (
+
+            x
+
+            &&
+
+            typeof x.then ===
+              "function"
+
+          ) {
+
+            x.then(
+              save
+            )
+            .catch(
+              e =>
+
+                window
+                  .__BUPA_CAPTCHA_ERROR__ =
+                    String(e)
+            );
+
+
+            return {
+
+              modo:
+                "execute-sitekey"
+            };
+          }
+
+
+          if (
+
+            typeof x ===
+              "string"
+
+            &&
+
+            x
+
+          ) {
+
+            save(x);
+
+
+            return {
+
+              modo:
+                "execute-sitekey"
+            };
+          }
+
+        } catch (e) {
+
+          window
+            .__BUPA_CAPTCHA_ERROR__ =
+              String(e);
+        }
+
+
+        // ----------------------------------------
+        // Invisible v2
+        // ----------------------------------------
+
+        try {
+
+          let c =
+            document
+              .getElementById(
+                "__bupa_recaptcha__"
+              );
+
+
+          if (!c) {
+
+            c =
+              document
+                .createElement(
+                  "div"
+                );
+
+
+            c.id =
+              "__bupa_recaptcha__";
+
+
+            c.style.cssText =
+              "position:fixed;left:8px;bottom:8px;z-index:2147483647";
+
+
+            document
+              .body
+              .appendChild(c);
+          }
+
+
+          const wid =
+            gre.render(
+              c,
+              {
+
+                sitekey:
+                  siteKey,
+
+                size:
+                  "invisible",
+
+                callback:
+                  save,
+
+                "expired-callback":
+                  () =>
+
+                    window
+                      .__BUPA_CAPTCHA_TOKEN__ =
+                        "",
+
+                "error-callback":
+                  () =>
+
+                    window
+                      .__BUPA_CAPTCHA_ERROR__ =
+                        "reCAPTCHA informó error"
+              }
+            );
+
+
+          window
+            .__BUPA_CAPTCHA_WIDGET__ =
+              wid;
+
+
+          gre.execute(
+            wid
+          );
+
+
+          return {
+
+            modo:
+              "invisible-v2"
+          };
+
+        } catch (e) {
+
+          window
+            .__BUPA_CAPTCHA_ERROR__ =
+              String(e);
+
+
+          return {
+
+            modo:
+              "",
+
+            error:
+              String(e)
+          };
+        }
+
+      },
+
+      {
+        siteKey:
+          info.siteKey,
+
+        action
+      }
+    );
+
+
+  // ----------------------------------------------
+  // Esperar token unos segundos
+  // ----------------------------------------------
+
+  for (
+    let i = 0;
+    i < 24;
+    i++
+  ) {
+
+    const token =
+      await page.evaluate(
+        () =>
+
+          window
+            .__BUPA_CAPTCHA_TOKEN__
+
+          ||
+
+          ""
+      );
+
+
+    if (token) {
 
       return {
 
@@ -2038,57 +1833,73 @@ async function ejecutarReserva(
           true,
 
         estado:
-          "reservada",
+          "captcha_listo",
 
-        idCita,
+        token,
 
-        respuestaBupa:
-          data
+        info: {
+
+          ...info,
+
+          action,
+
+          modo:
+            start.modo
+        }
       };
     }
 
 
-    return {
-
-      ok:
-        false,
-
-      estado:
-        "respuesta_reserva_error",
-
-      httpStatus:
-        reserva.httpStatus,
-
-      respuestaBupa:
-        data
-    };
+    await sleep(
+      250
+    );
   }
 
 
-  // =====================================================
-  // NO HUBO RESPUESTA
-  // =====================================================
+  // ----------------------------------------------
+  // ¿Google abrió desafío visual?
+  // ----------------------------------------------
 
-  await pausa(
-    1000
-  );
+  const visual =
+    await page.evaluate(
+      () =>
+
+        Array.from(
+          document
+            .querySelectorAll(
+              "iframe"
+            )
+        )
+        .some(
+          f => {
+
+            if (
+              !/recaptcha|captcha/i
+                .test(
+                  f.src ||
+                  ""
+                )
+            ) {
+
+              return false;
+            }
 
 
-  if (
-    await captchaVisual(
-      page
-    )
-  ) {
+            const r =
+              f.getBoundingClientRect();
 
-    return {
 
-      ok:
-        false,
+            return (
 
-      estado:
-        "requiere_verificacion"
-    };
-  }
+              r.width > 100
+
+              &&
+
+              r.height > 100
+            );
+          }
+        )
+    );
 
 
   return {
@@ -2097,518 +1908,193 @@ async function ejecutarReserva(
       false,
 
     estado:
-      "sin_respuesta_reserva"
+
+      visual
+
+        ?
+
+        "requiere_verificacion"
+
+        :
+
+        "captcha_sin_token",
+
+    info: {
+
+      ...info,
+
+      action,
+
+      modo:
+        start.modo,
+
+      error:
+        start.error ||
+        ""
+    }
   };
 }
 
 
 // ========================================================
-// AVANZAR FLUJO
+// ENVIAR RESERVA
 // ========================================================
 
-async function avanzarFlujo(
-  page,
-  entrada
+async function sendBooking(
+  entrada,
+  captcha
 ) {
 
-  const {
-
-    paciente = {},
-
-    reserva = {}
-
-  } =
-    entrada;
+  const token =
+    await login();
 
 
-  // =====================================================
-  // RUT
-  // =====================================================
-
-  if (
-    paciente.rut
-  ) {
-
-    const okRut =
-      await llenarCampo(
-        page,
-        [
-          "rut",
-
-          "documento",
-
-          "rut paciente"
-        ],
-        paciente.rut
-      );
-
-
-    await pausa(
-      500
+  const rut =
+    rutLimpio(
+      entrada
+        ?.paciente
+        ?.rut
     );
 
 
-    if (!okRut) {
-
-      return {
-
-        ...(
-          await estadoPagina(
-            page
-          )
-        ),
-
-        errorPaso:
-          "RUT"
-      };
-    }
-  }
-
-
-  // =====================================================
-  // PREVISIÓN
-  // =====================================================
-
-  if (
-    paciente.prevision
-  ) {
-
-    const okPrevision =
-      await seleccionarOpcion(
-        page,
-        "prevision",
-        paciente.prevision
-      );
-
-
-    await pausa(
-      700
+  const datosPaciente =
+    await pacienteApi(
+      rut,
+      token
     );
 
 
-    if (
-      !okPrevision
-    ) {
-
-      return {
-
-        ...(
-          await estadoPagina(
-            page
-          )
-        ),
-
-        errorPaso:
-          "PREVISION",
-
-        buscado:
-          paciente.prevision
-      };
-    }
-  }
+  const payload =
+    buildPayload(
+      entrada,
+      datosPaciente,
+      captcha
+    );
 
 
-  // =====================================================
-  // ACEPTAR DATOS PACIENTE
-  // =====================================================
-
-  const okContinuarInicial =
-    await clickTexto(
-      page,
-
-      [
-        "Aceptar",
-
-        "Continuar",
-
-        "Buscar"
-      ],
-
+  const r =
+    await fetch(
+      `${API}/agenda/ms-sap/reserva/reservahora`,
       {
-        exacto:
-          true,
 
-        espera:
-          1500
+        method:
+          "POST",
+
+        headers: {
+
+          accept:
+            "application/json",
+
+          "content-type":
+            "application/json",
+
+          authorization:
+            `Bearer ${token}`,
+
+          origin:
+            "https://agenda.bupa.cl",
+
+          referer:
+            "https://agenda.bupa.cl/"
+        },
+
+        body:
+          JSON.stringify(
+            payload
+          )
       }
     );
 
 
-  if (
-    !okContinuarInicial
-  ) {
+  const raw =
+    await r.text();
 
-    return {
 
-      ...(
-        await estadoPagina(
-          page
-        )
-      ),
+  let data;
 
-      errorPaso:
-        "CONTINUAR_INICIAL"
+
+  try {
+
+    data =
+      JSON.parse(
+        raw
+      );
+
+  } catch {
+
+    data = {
+      raw
     };
   }
 
 
-  // =====================================================
-  // ESPECIALIDAD
-  // =====================================================
+  const idCita =
 
-  if (
-    reserva.especialidad
-  ) {
+    data
+      ?.data
+      ?.IdCita
 
-    const okEspecialidad =
-      await seleccionarOpcion(
-        page,
-        "especialidad",
-        reserva.especialidad
-      );
-
-
-    await pausa(
-      700
-    );
-
-
-    if (
-      !okEspecialidad
-    ) {
-
-      return {
-
-        ...(
-          await estadoPagina(
-            page
-          )
-        ),
-
-        errorPaso:
-          "ESPECIALIDAD",
-
-        buscado:
-          reserva.especialidad
-      };
-    }
-  }
-
-
-  // =====================================================
-  // CENTRO
-  // =====================================================
-
-  /*
-   * Solo se ejecuta si
-   * reserva.centro existe.
-   *
-   * centroCodigo no activa
-   * esta selección.
-   */
-
-  if (
-    reserva.centro
-  ) {
-
-    const okCentro =
-      await seleccionarOpcion(
-        page,
-        "centro",
-        reserva.centro
-      );
-
-
-    await pausa(
-      700
-    );
-
-
-    if (
-      !okCentro
-    ) {
-
-      return {
-
-        ...(
-          await estadoPagina(
-            page
-          )
-        ),
-
-        errorPaso:
-          "CENTRO",
-
-        buscado:
-          reserva.centro
-      };
-    }
-  }
-
-
-  // =====================================================
-  // BUSCAR
-  // =====================================================
-
-  const okBuscar =
-    await clickTexto(
-      page,
-
-      [
-        "Buscar",
-
-        "Continuar",
-
-        "Aceptar"
-      ],
-
-      {
-        exacto:
-          true,
-
-        espera:
-          1800
-      }
-    );
-
-
-  if (
-    !okBuscar
-  ) {
-
-    return {
-
-      ...(
-        await estadoPagina(
-          page
-        )
-      ),
-
-      errorPaso:
-        "BUSCAR_HORAS"
-    };
-  }
-
-
-  // =====================================================
-  // PROFESIONAL
-  // =====================================================
-
-  if (
-    reserva.profesional
-  ) {
-
-    const okProfesional =
-      await clickTexto(
-        page,
-
-        reserva.profesional,
-
-        {
-          exacto:
-            false,
-
-          espera:
-            1200
-        }
-      );
-
-
-    if (
-      !okProfesional
-    ) {
-
-      return {
-
-        ...(
-          await estadoPagina(
-            page
-          )
-        ),
-
-        errorPaso:
-          "PROFESIONAL",
-
-        buscado:
-          reserva.profesional
-      };
-    }
-  }
-
-
-  // =====================================================
-  // FECHA
-  // =====================================================
-
-  if (
-    reserva.fechaTexto
     ||
-    reserva.fecha
-  ) {
 
-    const okFecha =
-      await clickTexto(
-        page,
+    data
+      ?.IdCita
 
-        [
-          reserva.fechaTexto,
+    ||
 
-          reserva.fecha
-        ]
-        .filter(Boolean),
+    data
+      ?.data
+      ?.idCita
 
-        {
-          exacto:
-            true,
+    ||
 
-          espera:
-            1200
-        }
-      );
+    "";
 
 
-    if (
-      !okFecha
-    ) {
+  const tipo =
 
-      return {
+    data
+      ?.data
+      ?.Estatus
+      ?.Tipo
 
-        ...(
-          await estadoPagina(
-            page
-          )
-        ),
+    ||
 
-        errorPaso:
-          "FECHA",
+    data
+      ?.Estatus
+      ?.Tipo
 
-        buscado:
-          reserva.fechaTexto
-          ||
-          reserva.fecha
-      };
-    }
-  }
+    ||
+
+    "";
 
 
-  // =====================================================
-  // HORA
-  // =====================================================
+  return {
 
-  if (
-    reserva.hora
-  ) {
+    ok:
 
-    const horaCorta =
-      String(
-        reserva.hora
-      )
-      .substring(
-        0,
-        5
-      );
+      r.ok
 
+      &&
 
-    const okHora =
-      await clickTexto(
-        page,
+      (
+        !!idCita
 
-        [
-          horaCorta,
+        ||
 
-          reserva.hora
-        ],
-
-        {
-          exacto:
-            true,
-
-          espera:
-            1200
-        }
-      );
+        tipo ===
+          "S"
+      ),
 
 
-    if (
-      !okHora
-    ) {
-
-      return {
-
-        ...(
-          await estadoPagina(
-            page
-          )
-        ),
-
-        errorPaso:
-          "HORA",
-
-        buscado:
-          horaCorta
-      };
-    }
-  }
+    status:
+      r.status,
 
 
-  // =====================================================
-  // CONTINUAR HASTA CONFIRMACIÓN
-  // =====================================================
-
-  for (
-    let intento = 0;
-
-    intento < 4;
-
-    intento++
-  ) {
-
-    if (
-      page
-        .url()
-        .includes(
-          "reserva-confirmar-hora"
-        )
-    ) {
-
-      break;
-    }
+    idCita,
 
 
-    const pudo =
-      await clickTexto(
-        page,
-
-        [
-          "Continuar",
-
-          "Aceptar"
-        ],
-
-        {
-          exacto:
-            true,
-
-          espera:
-            1200
-        }
-      );
-
-
-    if (!pudo) {
-      break;
-    }
-  }
-
-
-  await pausa(
-    1200
-  );
-
-
-  return await estadoPagina(
-    page
-  );
+    data
+  };
 }
 
 
@@ -2641,6 +2127,7 @@ export default {
       return new Response(
         null,
         {
+
           headers: {
 
             "access-control-allow-origin":
@@ -2666,24 +2153,27 @@ export default {
       "/"
     ) {
 
-      return json(
+      return j(
         {
+
           ok:
             true,
 
           servicio:
-            "IntegraMedica Browser",
+            "IntegraMedica Browser API-first",
 
-          rutas:
-            [
-              "/sessions",
+          rutas: [
 
-              "POST /flujo-completo",
+            "/sessions",
 
-              "POST /continuar-verificacion",
+            "POST /validar-payload",
 
-              "/cerrar?sessionId=..."
-            ]
+            "POST /flujo-completo",
+
+            "POST /continuar-verificacion",
+
+            "/cerrar?sessionId=..."
+          ]
         }
       );
     }
@@ -2700,12 +2190,14 @@ export default {
 
       try {
 
-        return json(
+        return j(
           {
+
             ok:
               true,
 
             sesiones:
+
               await puppeteer
                 .sessions(
                   env.BROWSER
@@ -2713,21 +2205,18 @@ export default {
           }
         );
 
+      } catch (e) {
 
-      } catch (
-        error
-      ) {
-
-        return json(
+        return j(
           {
+
             ok:
               false,
 
             error:
               String(
-                error?.stack
-                ||
-                error
+                e?.stack ||
+                e
               )
           },
 
@@ -2738,10 +2227,166 @@ export default {
 
 
     // ====================================================
+    // VALIDAR PAYLOAD
+    //
+    // NO ABRE BROWSER RUN
+    // ====================================================
+
+    if (
+
+      url.pathname ===
+        "/validar-payload"
+
+      &&
+
+      request.method ===
+        "POST"
+
+    ) {
+
+      try {
+
+        const entrada =
+          await request.json();
+
+
+        const token =
+          await login();
+
+
+        const rut =
+          rutLimpio(
+            entrada
+              ?.paciente
+              ?.rut
+          );
+
+
+        if (!rut) {
+
+          return j(
+            {
+
+              ok:
+                false,
+
+              estado:
+                "datos_incompletos",
+
+              faltante:
+                "paciente.rut"
+            },
+
+            400
+          );
+        }
+
+
+        const datosPaciente =
+          await pacienteApi(
+            rut,
+            token
+          );
+
+
+        const p =
+          buildPayload(
+            entrada,
+            datosPaciente,
+            "__VALIDACION__"
+          )
+          .data
+          .BupaCitaRequest;
+
+
+        return j(
+          {
+
+            ok:
+              true,
+
+            estado:
+              "payload_valido",
+
+            reserva: {
+
+
+              CentroMedico:
+                p.CentroMedico,
+
+
+              Especialidad:
+                p.Especialidad,
+
+
+              FechaCita:
+                p.FechaCita,
+
+
+              HoraCita:
+                p.HoraCita,
+
+
+              Prestacion:
+                p.Prestacion,
+
+
+              Prevision:
+                p.Prevision,
+
+
+              RutProfesional:
+                p.RutProfesional,
+
+
+              TipoPlanificacion:
+                p.TipoPlanificacion,
+
+
+              Duracion:
+                p.Duracion,
+
+
+              pobNr:
+                p.pobNr,
+
+
+              busquedaPor:
+                p.busquedaPor
+            }
+          }
+        );
+
+      } catch (e) {
+
+        return j(
+          {
+
+            ok:
+              false,
+
+            estado:
+              "payload_invalido",
+
+            error:
+              String(
+                e?.stack ||
+                e
+              )
+          },
+
+          400
+        );
+      }
+    }
+
+
+    // ====================================================
     // FLUJO COMPLETO
     // ====================================================
 
     if (
+
       url.pathname ===
         "/flujo-completo"
 
@@ -2749,6 +2394,7 @@ export default {
 
       request.method ===
         "POST"
+
     ) {
 
       let browser =
@@ -2765,17 +2411,14 @@ export default {
           await request.json();
 
 
-        // -----------------------------------------------
-        // CONFIRMACIÓN EXPLÍCITA
-        // -----------------------------------------------
-
         if (
           entrada.confirmar !==
           true
         ) {
 
-          return json(
+          return j(
             {
+
               ok:
                 false,
 
@@ -2788,18 +2431,27 @@ export default {
         }
 
 
-        // -----------------------------------------------
-        // RUT
-        // -----------------------------------------------
+        // ----------------------------------------------
+        // VALIDAR TODO ANTES DE ABRIR BROWSER RUN
+        // ----------------------------------------------
 
-        if (
-          !entrada
-            ?.paciente
-            ?.rut
-        ) {
+        const token =
+          await login();
 
-          return json(
+
+        const rut =
+          rutLimpio(
+            entrada
+              ?.paciente
+              ?.rut
+          );
+
+
+        if (!rut) {
+
+          return j(
             {
+
               ok:
                 false,
 
@@ -2815,44 +2467,31 @@ export default {
         }
 
 
-        // -----------------------------------------------
-        // HORA
-        // -----------------------------------------------
-
-        if (
-          !entrada
-            ?.reserva
-            ?.hora
-        ) {
-
-          return json(
-            {
-              ok:
-                false,
-
-              estado:
-                "datos_incompletos",
-
-              faltante:
-                "reserva.hora"
-            },
-
-            400
+        const datosPaciente =
+          await pacienteApi(
+            rut,
+            token
           );
-        }
 
 
-        // -----------------------------------------------
-        // CREAR UNA SOLA SESIÓN
-        // -----------------------------------------------
+        buildPayload(
+          entrada,
+          datosPaciente,
+          "__VALIDACION__"
+        );
+
+
+        // ----------------------------------------------
+        // BROWSER RUN SOLO DESDE AQUÍ
+        // ----------------------------------------------
 
         browser =
           await puppeteer.launch(
             env.BROWSER,
-
             {
+
               keep_alive:
-                KEEP_ALIVE_MS
+                KEEP_ALIVE
             }
           );
 
@@ -2878,14 +2517,10 @@ export default {
           );
 
 
-        // -----------------------------------------------
-        // ABRIR AGENDA
-        // -----------------------------------------------
-
         await page.goto(
-          AGENDA_URL,
-
+          AGENDA,
           {
+
             waitUntil:
               "domcontentloaded",
 
@@ -2895,152 +2530,35 @@ export default {
         );
 
 
-        await pausa(
+        await sleep(
           1200
         );
 
 
-        // -----------------------------------------------
-        // RECORRER FLUJO
-        // -----------------------------------------------
+        // ----------------------------------------------
+        // CAPTCHA LEGÍTIMO
+        // ----------------------------------------------
 
-        const pagina =
-          await avanzarFlujo(
-            page,
-            entrada
-          );
-
-
-        // -----------------------------------------------
-        // NO LLEGÓ A CONFIRMACIÓN
-        // -----------------------------------------------
-
-        if (
-          !page
-            .url()
-            .includes(
-              "reserva-confirmar-hora"
-            )
-        ) {
-
-          const lv =
-            await liveView(
-              page
-            );
-
-
-          mantener =
-            true;
-
-
-          browser
-            .disconnect();
-
-
-          browser =
-            null;
-
-
-          return json(
-            {
-              ok:
-                false,
-
-              estado:
-                "requiere_intervencion",
-
-              motivo:
-                "No fue posible llegar automáticamente a la pantalla final.",
-
-              sessionId,
-
-              liveViewUrl:
-                lv,
-
-              pagina
-            }
-          );
-        }
-
-
-        // -----------------------------------------------
-        // reCAPTCHA DEBE ESTAR CARGADO
-        // -----------------------------------------------
-
-        const captchaListo =
-          await page.evaluate(
-
-            () =>
-
-              typeof window
-                .grecaptcha
-
-              !==
-
-              "undefined"
-          );
-
-
-        if (
-          !captchaListo
-        ) {
-
-          const lv =
-            await liveView(
-              page
-            );
-
-
-          mantener =
-            true;
-
-
-          browser
-            .disconnect();
-
-
-          browser =
-            null;
-
-
-          return json(
-            {
-              ok:
-                false,
-
-              estado:
-                "requiere_intervencion",
-
-              motivo:
-                "La pantalla final cargó, pero reCAPTCHA aún no está disponible.",
-
-              sessionId,
-
-              liveViewUrl:
-                lv
-            }
-          );
-        }
-
-
-        // -----------------------------------------------
-        // RESERVAR
-        // -----------------------------------------------
-
-        const resultado =
-          await ejecutarReserva(
+        const cap =
+          await startCaptcha(
             page
           );
 
 
-        // -----------------------------------------------
-        // ÉXITO
-        // -----------------------------------------------
+        // ----------------------------------------------
+        // TENEMOS TOKEN
+        // ----------------------------------------------
 
         if (
-          resultado.estado ===
-          "reservada"
+          cap.ok
         ) {
+
+          const res =
+            await sendBooking(
+              entrada,
+              cap.token
+            );
+
 
           await browser.close();
 
@@ -3049,112 +2567,124 @@ export default {
             null;
 
 
-          return json(
-            {
-              ok:
-                true,
+          if (
+            res.ok
+          ) {
 
-              estado:
-                "reservada",
+            return j(
+              {
 
-              idCita:
-                resultado.idCita
-                ||
-                null,
+                ok:
+                  true,
 
-              respuestaBupa:
-                resultado.respuestaBupa
-            }
-          );
-        }
+                estado:
+                  "reservada",
 
+                idCita:
+                  res.idCita ||
+                  null,
 
-        // -----------------------------------------------
-        // CAPTCHA HUMANO
-        // -----------------------------------------------
-
-        if (
-          resultado.estado ===
-          "requiere_verificacion"
-        ) {
-
-          const lv =
-            await liveView(
-              page
+                respuestaBupa:
+                  res.data
+              }
             );
+          }
 
 
-          mantener =
-            true;
-
-
-          browser
-            .disconnect();
-
-
-          browser =
-            null;
-
-
-          return json(
+          return j(
             {
+
               ok:
                 false,
 
               estado:
-                "requiere_verificacion",
+                "respuesta_reserva_error",
 
-              sessionId,
+              httpStatus:
+                res.status,
 
-              liveViewUrl:
-                lv,
+              respuestaBupa:
+                res.data,
 
-              mensaje:
-                "Bupa requiere verificación humana. Resuélvela en Live View y luego llama /continuar-verificacion."
-            }
+              captchaInfo:
+                cap.info
+            },
+
+            400
           );
         }
 
 
-        // -----------------------------------------------
-        // OTRO ERROR
-        // -----------------------------------------------
+        // ----------------------------------------------
+        // CAPTCHA HUMANO / DIAGNÓSTICO
+        // ----------------------------------------------
 
-        const paginaFinal =
-          await estadoPagina(
+        const lv =
+          await liveView(
             page
           );
 
 
-        await browser.close();
+        mantener =
+          true;
+
+
+        browser
+          .disconnect();
 
 
         browser =
           null;
 
 
-        return json(
+        return j(
           {
+
             ok:
               false,
 
-            ...resultado,
+            estado:
 
-            pagina:
-              paginaFinal
-          },
+              cap.estado ===
+                "requiere_verificacion"
 
-          400
+              ||
+
+              cap.estado ===
+                "captcha_sin_token"
+
+                ?
+
+                "requiere_verificacion"
+
+                :
+
+                "requiere_intervencion",
+
+
+            sessionId,
+
+
+            liveViewUrl:
+              lv,
+
+
+            motivo:
+              cap.estado,
+
+
+            captchaInfo:
+              cap.info
+          }
         );
 
-
-      } catch (
-        error
-      ) {
+      } catch (e) {
 
         if (
           browser
+
           &&
+
           !mantener
         ) {
 
@@ -3162,12 +2692,13 @@ export default {
 
             await browser.close();
 
-          } catch (_) {}
+          } catch {}
         }
 
 
-        return json(
+        return j(
           {
+
             ok:
               false,
 
@@ -3176,9 +2707,8 @@ export default {
 
             error:
               String(
-                error?.stack
-                ||
-                error
+                e?.stack ||
+                e
               )
           },
 
@@ -3189,10 +2719,11 @@ export default {
 
 
     // ====================================================
-    // CONTINUAR DESPUÉS DE CAPTCHA
+    // CONTINUAR CAPTCHA HUMANO
     // ====================================================
 
     if (
+
       url.pathname ===
         "/continuar-verificacion"
 
@@ -3200,6 +2731,7 @@ export default {
 
       request.method ===
         "POST"
+
     ) {
 
       let browser =
@@ -3217,8 +2749,9 @@ export default {
           true
         ) {
 
-          return json(
+          return j(
             {
+
               ok:
                 false,
 
@@ -3235,13 +2768,17 @@ export default {
           !entrada.sessionId
         ) {
 
-          return json(
+          return j(
             {
+
               ok:
                 false,
 
-              error:
-                "Falta sessionId"
+              estado:
+                "datos_incompletos",
+
+              faltante:
+                "sessionId"
             },
 
             400
@@ -3250,74 +2787,62 @@ export default {
 
 
         browser =
-          await puppeteer
-            .connect(
-              env.BROWSER,
-              entrada.sessionId
-            );
+          await puppeteer.connect(
+            env.BROWSER,
+            entrada.sessionId
+          );
 
 
         const page =
-          await obtenerPagina(
+          await agendaPage(
             browser
           );
 
 
-        await pausa(
-          800
+        await sleep(
+          500
         );
 
 
-        const resultado =
-          await ejecutarReserva(
-            page
+        let token =
+          await page.evaluate(
+            () =>
+
+              window
+                .__BUPA_CAPTCHA_TOKEN__
+
+              ||
+
+              ""
           );
 
 
-        // -----------------------------------------------
-        // ÉXITO
-        // -----------------------------------------------
+        if (!token) {
 
-        if (
-          resultado.estado ===
-          "reservada"
-        ) {
-
-          await browser.close();
+          await sleep(
+            1000
+          );
 
 
-          browser =
-            null;
+          token =
+            await page.evaluate(
+              () =>
 
+                window
+                  .__BUPA_CAPTCHA_TOKEN__
 
-          return json(
-            {
-              ok:
-                true,
-
-              estado:
-                "reservada",
-
-              idCita:
-                resultado.idCita
                 ||
-                null,
 
-              respuestaBupa:
-                resultado.respuestaBupa
-            }
-          );
+                ""
+            );
         }
 
 
-        // -----------------------------------------------
-        // SIGUE CAPTCHA
-        // -----------------------------------------------
+        // ----------------------------------------------
+        // TODAVÍA NO TERMINA CAPTCHA
+        // ----------------------------------------------
 
-        if (
-          resultado.estado ===
-          "requiere_verificacion"
-        ) {
+        if (!token) {
 
           const lv =
             await liveView(
@@ -3333,8 +2858,9 @@ export default {
             null;
 
 
-          return json(
+          return j(
             {
+
               ok:
                 false,
 
@@ -3351,13 +2877,14 @@ export default {
         }
 
 
-        // -----------------------------------------------
-        // OTRO ESTADO
-        // -----------------------------------------------
+        // ----------------------------------------------
+        // CAPTCHA RESUELTO
+        // ----------------------------------------------
 
-        const pagina =
-          await estadoPagina(
-            page
+        const res =
+          await sendBooking(
+            entrada,
+            token
           );
 
 
@@ -3368,35 +2895,64 @@ export default {
           null;
 
 
-        return json(
+        if (
+          res.ok
+        ) {
+
+          return j(
+            {
+
+              ok:
+                true,
+
+              estado:
+                "reservada",
+
+              idCita:
+                res.idCita ||
+                null,
+
+              respuestaBupa:
+                res.data
+            }
+          );
+        }
+
+
+        return j(
           {
+
             ok:
               false,
 
-            ...resultado,
+            estado:
+              "respuesta_reserva_error",
 
-            pagina
+            httpStatus:
+              res.status,
+
+            respuestaBupa:
+              res.data
           },
 
           400
         );
 
-
-      } catch (
-        error
-      ) {
+      } catch (e) {
 
         try {
 
           if (browser) {
+
             await browser.close();
           }
 
-        } catch (_) {}
+        } catch {}
 
 
-        return json(
+        return j(
           {
+
             ok:
               false,
 
@@ -3405,9 +2961,8 @@ export default {
 
             error:
               String(
-                error?.stack
-                ||
-                error
+                e?.stack ||
+                e
               )
           },
 
@@ -3426,7 +2981,7 @@ export default {
       "/cerrar"
     ) {
 
-      const sessionId =
+      const id =
         url
           .searchParams
           .get(
@@ -3434,12 +2989,11 @@ export default {
           );
 
 
-      if (
-        !sessionId
-      ) {
+      if (!id) {
 
-        return json(
+        return j(
           {
+
             ok:
               false,
 
@@ -3454,19 +3008,19 @@ export default {
 
       try {
 
-        const browser =
-          await puppeteer
-            .connect(
-              env.BROWSER,
-              sessionId
-            );
+        const b =
+          await puppeteer.connect(
+            env.BROWSER,
+            id
+          );
 
 
-        await browser.close();
+        await b.close();
 
 
-        return json(
+        return j(
           {
+
             ok:
               true,
 
@@ -3475,19 +3029,16 @@ export default {
           }
         );
 
-
       } catch {
 
-        return json(
+        return j(
           {
+
             ok:
               false,
 
             estado:
-              "sesion_no_disponible",
-
-            mensaje:
-              "La sesión probablemente ya expiró o fue cerrada."
+              "sesion_no_disponible"
           },
 
           404
@@ -3496,12 +3047,9 @@ export default {
     }
 
 
-    // ====================================================
-    // RUTA DESCONOCIDA
-    // ====================================================
-
-    return json(
+    return j(
       {
+
         ok:
           false,
 
