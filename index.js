@@ -663,17 +663,27 @@ async function avanzarFlujo(
   // ------------------------------------------------------
 
   if (paciente.rut) {
-    await llenarCampo(
-      page,
-      [
-        "rut",
-        "documento",
-        "rut paciente"
-      ],
-      paciente.rut
-    );
+
+    const okRut =
+      await llenarCampo(
+        page,
+        [
+          "rut",
+          "documento",
+          "rut paciente"
+        ],
+        paciente.rut
+      );
 
     await pausa(500);
+
+    if (!okRut) {
+      return {
+        ...(await estadoPagina(page)),
+        errorPaso: "RUT",
+        buscado: paciente.rut
+      };
+    }
   }
 
   // ------------------------------------------------------
@@ -681,160 +691,216 @@ async function avanzarFlujo(
   // ------------------------------------------------------
 
   if (paciente.prevision) {
-    await seleccionarOpcion(
-      page,
-      "prevision",
-      paciente.prevision
-    );
 
-    await pausa(500);
+    const okPrevision =
+      await seleccionarOpcion(
+        page,
+        "prevision",
+        paciente.prevision
+      );
+
+    await pausa(700);
+
+    if (!okPrevision) {
+      return {
+        ...(await estadoPagina(page)),
+        errorPaso: "PREVISION",
+        buscado: paciente.prevision
+      };
+    }
   }
 
   // ------------------------------------------------------
   // CONTINUAR PRIMER PASO
   // ------------------------------------------------------
 
-  await clickTexto(
-    page,
-    [
-      "Continuar",
-      "Buscar"
-    ],
-    {
-      exacto: false,
-      espera: 1200
-    }
-  );
+  const okContinuarInicial =
+    await clickTexto(
+      page,
+      [
+        "Continuar",
+        "Buscar"
+      ],
+      {
+        exacto: false,
+        espera: 1500
+      }
+    );
+
+  if (!okContinuarInicial) {
+    return {
+      ...(await estadoPagina(page)),
+      errorPaso: "CONTINUAR_INICIAL"
+    };
+  }
 
   // ------------------------------------------------------
   // ESPECIALIDAD
   // ------------------------------------------------------
 
   if (reserva.especialidad) {
-    await seleccionarOpcion(
-      page,
-      "especialidad",
-      reserva.especialidad
-    );
 
-    await pausa(500);
+    const okEspecialidad =
+      await seleccionarOpcion(
+        page,
+        "especialidad",
+        reserva.especialidad
+      );
+
+    await pausa(700);
+
+    if (!okEspecialidad) {
+      return {
+        ...(await estadoPagina(page)),
+        errorPaso: "ESPECIALIDAD",
+        buscado: reserva.especialidad
+      };
+    }
   }
 
   // ------------------------------------------------------
   // CENTRO
   // ------------------------------------------------------
+  //
+  // IMPORTANTE:
+  // Solo intenta centro si realmente viene reserva.centro.
+  // En nuestra llamada actual enviamos centroCodigo,
+  // por lo que NO intentará seleccionar "IPE" como texto.
+  // ------------------------------------------------------
 
   if (reserva.centro) {
-    await seleccionarOpcion(
-      page,
-      "centro",
-      reserva.centro
-    );
 
-    await pausa(500);
-  }
+    const okCentro =
+      await seleccionarOpcion(
+        page,
+        "centro",
+        reserva.centro
+      );
 
-  await clickTexto(
-    page,
-    [
-      "Buscar",
-      "Continuar"
-    ],
-    {
-      exacto: false,
-      espera: 1800
+    await pausa(700);
+
+    if (!okCentro) {
+      return {
+        ...(await estadoPagina(page)),
+        errorPaso: "CENTRO",
+        buscado: reserva.centro
+      };
     }
-  );
-
-// ------------------------------------------------------
-// PROFESIONAL
-// ------------------------------------------------------
-
-if (reserva.profesional) {
-
-  const okProfesional =
-    await clickTexto(
-      page,
-      reserva.profesional,
-      {
-        exacto: false,
-        espera: 1200
-      }
-    );
-
-  if (!okProfesional) {
-    return {
-      ...(await estadoPagina(page)),
-      errorPaso: "PROFESIONAL",
-      buscado: reserva.profesional
-    };
   }
-}
 
-// ------------------------------------------------------
-// FECHA
-// ------------------------------------------------------
+  // ------------------------------------------------------
+  // BUSCAR / CONTINUAR
+  // ------------------------------------------------------
 
-if (
-  reserva.fechaTexto ||
-  reserva.fecha
-) {
-
-  const okFecha =
+  const okBuscar =
     await clickTexto(
       page,
       [
-        reserva.fechaTexto,
-        reserva.fecha
-      ].filter(Boolean),
-      {
-        exacto: false,
-        espera: 1200
-      }
-    );
-
-  if (!okFecha) {
-    return {
-      ...(await estadoPagina(page)),
-      errorPaso: "FECHA",
-      buscado:
-        reserva.fechaTexto ||
-        reserva.fecha
-    };
-  }
-}
-
-// ------------------------------------------------------
-// HORA
-// ------------------------------------------------------
-
-if (reserva.hora) {
-
-  const horaCorta =
-    String(reserva.hora)
-      .substring(0, 5);
-
-  const okHora =
-    await clickTexto(
-      page,
-      [
-        horaCorta,
-        reserva.hora
+        "Buscar",
+        "Continuar"
       ],
       {
         exacto: false,
-        espera: 1200
+        espera: 1800
       }
     );
 
-  if (!okHora) {
+  if (!okBuscar) {
     return {
       ...(await estadoPagina(page)),
-      errorPaso: "HORA",
-      buscado: horaCorta
+      errorPaso: "BUSCAR_HORAS"
     };
   }
-}
+
+  // ------------------------------------------------------
+  // PROFESIONAL
+  // ------------------------------------------------------
+
+  if (reserva.profesional) {
+
+    const okProfesional =
+      await clickTexto(
+        page,
+        reserva.profesional,
+        {
+          exacto: false,
+          espera: 1200
+        }
+      );
+
+    if (!okProfesional) {
+      return {
+        ...(await estadoPagina(page)),
+        errorPaso: "PROFESIONAL",
+        buscado: reserva.profesional
+      };
+    }
+  }
+
+  // ------------------------------------------------------
+  // FECHA
+  // ------------------------------------------------------
+
+  if (
+    reserva.fechaTexto ||
+    reserva.fecha
+  ) {
+
+    const okFecha =
+      await clickTexto(
+        page,
+        [
+          reserva.fechaTexto,
+          reserva.fecha
+        ].filter(Boolean),
+        {
+          exacto: false,
+          espera: 1200
+        }
+      );
+
+    if (!okFecha) {
+      return {
+        ...(await estadoPagina(page)),
+        errorPaso: "FECHA",
+        buscado:
+          reserva.fechaTexto ||
+          reserva.fecha
+      };
+    }
+  }
+
+  // ------------------------------------------------------
+  // HORA
+  // ------------------------------------------------------
+
+  if (reserva.hora) {
+
+    const horaCorta =
+      String(reserva.hora)
+        .substring(0, 5);
+
+    const okHora =
+      await clickTexto(
+        page,
+        [
+          horaCorta,
+          reserva.hora
+        ],
+        {
+          exacto: false,
+          espera: 1200
+        }
+      );
+
+    if (!okHora) {
+      return {
+        ...(await estadoPagina(page)),
+        errorPaso: "HORA",
+        buscado: horaCorta
+      };
+    }
+  }
 
   // ------------------------------------------------------
   // CONTINUAR HASTA CONFIRMACIÓN
@@ -845,6 +911,7 @@ if (reserva.hora) {
     intento < 4;
     intento++
   ) {
+
     if (
       page
         .url()
