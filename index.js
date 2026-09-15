@@ -746,29 +746,41 @@ async function avanzarFlujo(
     }
   );
 
-  // ------------------------------------------------------
-  // PROFESIONAL
-  // ------------------------------------------------------
+// ------------------------------------------------------
+// PROFESIONAL
+// ------------------------------------------------------
 
-  if (reserva.profesional) {
+if (reserva.profesional) {
+
+  const okProfesional =
     await clickTexto(
       page,
       reserva.profesional,
       {
         exacto: false,
-        espera: 800
+        espera: 1200
       }
     );
+
+  if (!okProfesional) {
+    return {
+      ...(await estadoPagina(page)),
+      errorPaso: "PROFESIONAL",
+      buscado: reserva.profesional
+    };
   }
+}
 
-  // ------------------------------------------------------
-  // FECHA
-  // ------------------------------------------------------
+// ------------------------------------------------------
+// FECHA
+// ------------------------------------------------------
 
-  if (
-    reserva.fechaTexto ||
-    reserva.fecha
-  ) {
+if (
+  reserva.fechaTexto ||
+  reserva.fecha
+) {
+
+  const okFecha =
     await clickTexto(
       page,
       [
@@ -777,40 +789,52 @@ async function avanzarFlujo(
       ].filter(Boolean),
       {
         exacto: false,
-        espera: 700
+        espera: 1200
       }
     );
+
+  if (!okFecha) {
+    return {
+      ...(await estadoPagina(page)),
+      errorPaso: "FECHA",
+      buscado:
+        reserva.fechaTexto ||
+        reserva.fecha
+    };
   }
+}
 
-  // ------------------------------------------------------
-  // HORA
-  // ------------------------------------------------------
+// ------------------------------------------------------
+// HORA
+// ------------------------------------------------------
 
-  if (reserva.hora) {
-    const horaCorta =
-      String(
+if (reserva.hora) {
+
+  const horaCorta =
+    String(reserva.hora)
+      .substring(0, 5);
+
+  const okHora =
+    await clickTexto(
+      page,
+      [
+        horaCorta,
         reserva.hora
-      ).substring(0, 5);
+      ],
+      {
+        exacto: false,
+        espera: 1200
+      }
+    );
 
-    const horaSeleccionada =
-      await clickTexto(
-        page,
-        [
-          reserva.hora,
-          horaCorta
-        ],
-        {
-          exacto: false,
-          espera: 800
-        }
-      );
-
-    if (!horaSeleccionada) {
-      throw new Error(
-        `No se encontró la hora ${reserva.hora}`
-      );
-    }
+  if (!okHora) {
+    return {
+      ...(await estadoPagina(page)),
+      errorPaso: "HORA",
+      buscado: horaCorta
+    };
   }
+}
 
   // ------------------------------------------------------
   // CONTINUAR HASTA CONFIRMACIÓN
