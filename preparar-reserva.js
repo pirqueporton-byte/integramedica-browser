@@ -4,6 +4,22 @@ const MONTHS = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto
 const DAYS = ['DOM','LUN','MAR','MIÉ','JUE','VIE','SÁB'];
 const normalize = s => String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
 
+// Función autocontenida: Puppeteer la ejecuta dentro de la página.
+export function lateralSummaryReady(target, sourceText = null) {
+  const norm = s => String(s).normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,' ').trim().toLowerCase();
+  const text = norm(sourceText === null ? document.body.innerText : sourceText);
+  const start = text.lastIndexOf('resumen de tu hora');
+  if (start < 0) return false;
+  const summary = text.slice(start);
+  const escape = s => s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+  const date = norm(target.dateLabel).replace(/^0/,'');
+  // El formato puede usar coma, salto de línea o "a las" entre fecha y hora.
+  const dateTime = new RegExp('\\b0?' + escape(date) + '(?:[\\s,;:–—-]+|\\s+a\\s+las\\s+)' + escape(target.time) + '(?::00)?\\b');
+  const words = norm(target.professional).split(' ');
+  return dateTime.test(summary) && summary.includes(norm(target.center)) &&
+    words.every(word => new RegExp('(?:^|\\W)' + escape(word) + '(?:$|\\W)').test(summary));
+}
+
 export function validatePreparation(input, today = new Intl.DateTimeFormat('en-CA', {timeZone:'America/Santiago'}).format(new Date())) {
   const p = input?.paciente || {}, r = input?.reserva || {};
   for (const [key, value] of Object.entries({rut:p.rut, previsionNombre:p.previsionNombre, profesionalNombre:r.profesionalNombre, especialidadNombre:r.especialidadNombre, prestacionNombre:r.prestacionNombre, centroNombre:r.centroNombre, fecha:r.fecha, hora:r.hora})) {
@@ -110,11 +126,20 @@ export async function prepareOfficialPage(page, inputData, onStep = () => {}) {
     return candidates.length === 1 ? candidates[0] : false;
   }, {timeout:60000}, {dateLabel,center:r.centroNombre,time});
   try { await slotHandle.asElement().click(); } finally { await slotHandle.dispose(); }
+  onStep('resumen_lateral');
   // El resumen lateral tiene que coincidir antes de continuar.
-  await page.waitForFunction(({dateLabel,time}) => {
-    const t = document.body.innerText.toLowerCase().replace(/\s+/g,' ');
-    return t.includes('resumen de tu hora') && t.includes(`${dateLabel}, ${time}`);
-  }, {timeout:10000}, {dateLabel,time});
+  try {
+    await page.waitForFunction(lateralSummaryReady, {timeout:30000}, {
+      dateLabel,time,center:r.centroNombre,professional:r.profesionalNombre
+    });
+  } catch {
+    const pathname = new URL(page.url()).pathname;
+    if (pathname.endsWith('/reserva-filtro-flujo') || pathname.endsWith('/reserva-consulta-medica')) {
+      throw new Error('NAVEGACION_REINICIADA: la agenda regresó al formulario antes de validar la hora. No se confirmó ninguna reserva.');
+    }
+    throw new Error('RESUMEN_NO_VALIDADO: no apareció en 30 segundos un resumen lateral con el médico, centro, fecha y hora solicitados. No se confirmó ninguna reserva.');
+  }
+  onStep('continuar_resumen');
   await button(page, 'Continuar');
 
   onStep('resumen');
@@ -146,7 +171,9 @@ export async function prepareRoute(request, env, puppeteer, json) {
       liveViewUrl = (await cdp.send('Cloudflare.getLiveView',{mode:'tab',expiresInMs:600000})).devtoolsFrontendUrl;
       await cdp.detach();
     } catch {}
-    return json({ok:false,estado:'preparacion_incompleta',reservada:false,paso,error:e.message,sessionId:browser?.sessionId(),liveViewUrl},502);
+    let paginaActual = null;
+    try { if (page) paginaActual = new URL(page.url()).pathname; } catch {}
+    return json({ok:false,estado:'preparacion_incompleta',version:'preparacion-0.2',reservada:false,paso,paginaActual,error:e.message,sessionId:browser?.sessionId(),liveViewUrl},502);
   } finally {
     if (browser) await browser.disconnect();
   }
