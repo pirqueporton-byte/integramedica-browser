@@ -1,5 +1,6 @@
 // @ts-nocheck
 import puppeteer from "@cloudflare/puppeteer";
+import { prepareRoute } from "./preparar-reserva.js";
 
 const API = "https://api.bupa.cl";
 
@@ -2143,6 +2144,10 @@ export default {
       );
     }
 
+
+    if (url.pathname === "/preparar-reserva" && request.method === "POST") {
+      return prepareRoute(request, env, puppeteer, j);
+    }
 
     // ====================================================
     // HOME
